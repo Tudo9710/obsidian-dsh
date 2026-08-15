@@ -1063,14 +1063,6 @@ class DSHChatView extends ItemView {
     const head = wrap.createDiv({ cls: "dsh-message-head" });
     head.createSpan({ cls: "dsh-message-role", text: m.role === "user" ? "我" : m.role === "error" ? "错误" : "DSH" });
     head.createSpan({ cls: "dsh-message-time", text: fmtTime(m.ts) });
-    if ((m.role === "assistant" || m.role === "error") && (m.content || "").trim()) {
-      const copyBtn = head.createEl("button", { cls: "dsh-icon-btn dsh-copy-btn", attr: { "aria-label": "复制回答", title: "复制回答" } });
-      setIcon(copyBtn, "copy");
-      copyBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        this.copyText(m.content);
-      });
-    }
     const body = wrap.createDiv({ cls: "dsh-message-body" });
     if (m.role === "user") {
       body.createDiv({ text: m.content || "" });
@@ -1087,29 +1079,6 @@ class DSHChatView extends ItemView {
     }
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     return wrap;
-  }
-
-  /** 复制文本到剪贴板（含兼容回退） */
-  async copyText(text) {
-    const t = String(text || "");
-    try {
-      await navigator.clipboard.writeText(t);
-      new Notice("已复制回答");
-    } catch (e) {
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = t;
-        ta.style.position = "fixed";
-        ta.style.opacity = "0";
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-        new Notice("已复制回答");
-      } catch (e2) {
-        new Notice("复制失败：" + String((e2 && e2.message) || e2));
-      }
-    }
   }
 
   /** 渲染折叠的思考面板（assistant 消息上方；无论有无内容都显示，永不消失） */

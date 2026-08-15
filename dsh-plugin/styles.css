@@ -338,15 +338,6 @@
   -webkit-user-select: text;
 }
 
-.dsh-copy-btn {
-  flex: 0 0 auto;
-  opacity: 0.6;
-}
-
-.dsh-copy-btn:hover {
-  opacity: 1;
-}
-
 .dsh-message-user .dsh-message-body {
   white-space: pre-wrap;
   padding: 8px 10px;
