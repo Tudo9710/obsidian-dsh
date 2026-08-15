@@ -1121,14 +1121,20 @@ class DSHChatView extends ItemView {
       ].join("");
       return;
     }
+    let lastPanelEl = null;
     for (const m of messages) {
       // assistant/error 消息携带思考记录时，先渲染折叠面板
       if ((m.role === "assistant" || m.role === "error") && m.thinking) {
-        this.renderThinkingPanel(m.thinking);
+        lastPanelEl = this.renderThinkingPanel(m.thinking);
       }
       this.renderMessageEl(m);
     }
-    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    // 完成后滚动到最近的思考面板（让其可见），而不是滚到长答案的最底部
+    if (lastPanelEl && lastPanelEl.offsetTop != null) {
+      this.messagesEl.scrollTop = Math.max(0, lastPanelEl.offsetTop - 8);
+    } else {
+      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    }
   }
 
   /* ---------- 发送 ---------- */
