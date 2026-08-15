@@ -119,9 +119,13 @@
 /* ---------- 思考过程面板 ---------- */
 .dsh-live,
 .dsh-thinking-summary {
+  position: sticky;
+  top: 0;
+  z-index: 5;
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   overflow: hidden;
+  background: var(--background-primary);
 }
 
 .dsh-thinking-head {

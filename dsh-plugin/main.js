@@ -1123,18 +1123,15 @@ class DSHChatView extends ItemView {
     }
     let lastPanelEl = null;
     for (const m of messages) {
-      // assistant/error 消息携带思考记录时，先渲染折叠面板
+      // assistant/error 消息携带思考记录时，先渲染折叠面板（sticky 定位，始终可见）
       if ((m.role === "assistant" || m.role === "error") && m.thinking) {
         lastPanelEl = this.renderThinkingPanel(m.thinking);
       }
       this.renderMessageEl(m);
     }
-    // 完成后滚动到最近的思考面板（让其可见），而不是滚到长答案的最底部
-    if (lastPanelEl && lastPanelEl.offsetTop != null) {
-      this.messagesEl.scrollTop = Math.max(0, lastPanelEl.offsetTop - 8);
-    } else {
-      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
-    }
+    // 滚动到底部即可：思考面板为 sticky 定位，滚动时钉在顶部，不会消失
+    void lastPanelEl;
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
   /* ---------- 发送 ---------- */
