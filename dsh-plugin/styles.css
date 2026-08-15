@@ -269,6 +269,8 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .dsh-greeting {
@@ -332,6 +334,17 @@
   font-size: var(--font-ui-small);
   line-height: 1.7;
   word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dsh-copy-btn {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+.dsh-copy-btn:hover {
+  opacity: 1;
 }
 
 .dsh-message-user .dsh-message-body {
