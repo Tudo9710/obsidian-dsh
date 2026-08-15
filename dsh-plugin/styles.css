@@ -122,6 +122,10 @@
   position: sticky;
   top: 0;
   z-index: 5;
+  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   overflow: hidden;
@@ -138,14 +142,23 @@
   color: var(--text-muted);
   background: var(--background-secondary);
   user-select: none;
+  min-width: 0;
 }
 
 .dsh-thinking-head:hover {
   background: var(--background-modifier-hover);
 }
 
+.dsh-thinking-emoji {
+  flex: 0 0 auto;
+}
+
 .dsh-thinking-time {
   font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dsh-thinking-body {
