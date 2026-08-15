@@ -119,9 +119,6 @@
 /* ---------- 思考过程面板 ---------- */
 .dsh-live,
 .dsh-thinking-summary {
-  position: sticky;
-  top: 0;
-  z-index: 5;
   flex: 0 0 auto;
   width: 100%;
   min-width: 0;
