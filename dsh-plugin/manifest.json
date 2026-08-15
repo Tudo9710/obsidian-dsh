@@ -1,0 +1,10 @@
+{
+  "id": "dsh",
+  "name": "DSH",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Embed DSH (DeepSeek Harness) as the single AI agent in your vault: chat panel, session history, per-session model/reasoning-effort/permission switching, live thinking process, and model discovery.",
+  "author": "Tudo9710",
+  "authorUrl": "https://github.com/Tudo9710",
+  "isDesktopOnly": true
+}

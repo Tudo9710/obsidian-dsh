@@ -1,0 +1,15 @@
+# ===== 安全：测试/运行时残留（.dsh 里曾有 API key，永不提交） =====
+.dsh/
+test/.vault-mock/
+test/_obsidian-stub.js
+test/_stub-obsidian.js
+
+# ===== 插件运行时数据（用户本机设置，不应入库） =====
+dsh-plugin/data.json
+
+# ===== 错误日志 =====
+error.log
+*.log
+
+# ===== Node =====
+node_modules/

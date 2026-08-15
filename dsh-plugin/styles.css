@@ -1,0 +1,381 @@
+/* DSH — 聊天面板样式 */
+
+.dsh-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ---------- 头部 ---------- */
+.dsh-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.dsh-header-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-header-actions {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.dsh-icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.dsh-icon-btn:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+/* ---------- 输入区 ---------- */
+.dsh-input-wrap {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--background-modifier-border);
+  padding: 8px 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dsh-input {
+  width: 100%;
+  resize: vertical;
+  min-height: 60px;
+  max-height: 200px;
+  font-size: var(--font-ui-small);
+}
+
+.dsh-input-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dsh-toolbar-selects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.dsh-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dsh-select-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.dsh-select {
+  font-size: var(--font-ui-smaller);
+  max-width: 150px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+  text-align: center;
+  text-align-last: center;
+}
+
+.dsh-send-btn {
+  flex: 0 0 auto;
+}
+
+.dsh-send-btn:disabled {
+  opacity: 0.6;
+}
+
+/* ---------- 思考过程面板 ---------- */
+.dsh-live,
+.dsh-thinking-summary {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.dsh-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  user-select: none;
+}
+
+.dsh-thinking-head:hover {
+  background: var(--background-modifier-hover);
+}
+
+.dsh-thinking-time {
+  font-weight: 600;
+}
+
+.dsh-thinking-body {
+  padding: 6px 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dsh-thinking-reason {
+  font-size: var(--font-ui-smaller);
+  font-style: italic;
+  color: var(--text-muted);
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.dsh-thinking-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dsh-thinking-tool {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  padding: 2px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dsh-sessions-panel {
+  flex: 0 0 auto;
+  max-height: 40%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 4px 0;
+}
+
+.dsh-sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dsh-session-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 6px;
+  margin: 0 6px;
+}
+
+.dsh-session-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.dsh-session-item.is-active {
+  background: var(--background-modifier-active);
+}
+
+.dsh-session-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dsh-session-title {
+  font-size: var(--font-ui-small);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dsh-session-time {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.dsh-session-del {
+  flex: 0 0 auto;
+  opacity: 0.5;
+}
+
+.dsh-session-del:hover {
+  opacity: 1;
+}
+
+.dsh-sessions-empty {
+  padding: 8px 12px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+/* ---------- 消息区 ---------- */
+.dsh-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dsh-greeting {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  padding: 8px 4px;
+  max-width: 90%;
+}
+
+.dsh-greeting-title {
+  font-size: var(--font-ui-medium);
+  font-weight: 600;
+  color: var(--text-normal);
+  margin-bottom: 8px;
+}
+
+.dsh-greeting ul {
+  margin: 4px 0;
+  padding-left: 18px;
+  line-height: 1.8;
+}
+
+.dsh-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 100%;
+}
+
+.dsh-message-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.dsh-message-role {
+  font-weight: 600;
+  font-size: var(--font-ui-smaller);
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--background-modifier-hover);
+}
+
+.dsh-message-user .dsh-message-role {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.dsh-message-error .dsh-message-role {
+  background: var(--background-modifier-error, #d03050);
+  color: var(--text-on-accent, #fff);
+}
+
+.dsh-message-time {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.dsh-message-body {
+  font-size: var(--font-ui-small);
+  line-height: 1.7;
+  word-break: break-word;
+}
+
+.dsh-message-user .dsh-message-body {
+  white-space: pre-wrap;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.dsh-error-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-secondary);
+  color: var(--text-error);
+  padding: 8px 10px;
+  border-radius: 8px;
+  margin: 0;
+}
+
+.dsh-empty-reply {
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+/* ---------- 状态条 ---------- */
+.dsh-status {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  border-top: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.dsh-settings-desc {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  margin-top: -8px;
+}
+
+/* 发现模型状态行 */
+.dsh-discover-status {
+  margin: 0 12px 12px;
+  padding: 6px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+  word-break: break-all;
+}
+
+.dsh-ac-ok { color: var(--text-success, #4caf50); }
+.dsh-ac-bad { color: var(--text-error); }
+.dsh-ac-warn { color: var(--text-warning, #e6a23c); }
+
+.dsh-hidden {
+  display: none !important;
+}
