@@ -1081,19 +1081,24 @@ class DSHChatView extends ItemView {
     return wrap;
   }
 
-  /** 渲染折叠的思考面板（用于 assistant 消息上方；确定性重建，不依赖 DOM 存活） */
+  /** 渲染折叠的思考面板（assistant 消息上方；无论有无内容都显示，永不消失） */
   renderThinkingPanel(thinking) {
-    const hasContent = thinking && (thinking.reasoning || (thinking.tools && thinking.tools.length > 0));
-    if (!hasContent) return null;
+    const tools = thinking && Array.isArray(thinking.tools) ? thinking.tools : [];
+    const hasReasoning = !!(thinking && thinking.reasoning);
+    const hasTools = tools.length > 0;
     const panel = this.messagesEl.createDiv({ cls: "dsh-thinking-summary" });
     const head = panel.createDiv({ cls: "dsh-thinking-head" });
     head.createSpan({ cls: "dsh-thinking-emoji", text: "🧠" });
-    head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · " + thinking.seconds + "s · " + (thinking.tools ? thinking.tools.length : 0) + " 步工具" });
+    head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · " + (thinking ? thinking.seconds : 0) + "s · " + tools.length + " 步工具" });
     const body = panel.createDiv({ cls: "dsh-thinking-body dsh-hidden" });
-    if (thinking.reasoning) body.createDiv({ cls: "dsh-thinking-reason", text: thinking.reasoning });
-    if (thinking.tools && thinking.tools.length > 0) {
-      const t = body.createDiv({ cls: "dsh-thinking-tools" });
-      for (const line of thinking.tools) t.createDiv({ cls: "dsh-thinking-tool", text: line });
+    if (!hasReasoning && !hasTools) {
+      body.createDiv({ cls: "dsh-thinking-reason", text: "（本次没有推理/工具记录——可能是思考强度为关闭，或任务简单无需调用工具）" });
+    } else {
+      if (hasReasoning) body.createDiv({ cls: "dsh-thinking-reason", text: thinking.reasoning });
+      if (hasTools) {
+        const t = body.createDiv({ cls: "dsh-thinking-tools" });
+        for (const line of tools) t.createDiv({ cls: "dsh-thinking-tool", text: line });
+      }
     }
     head.addEventListener("click", () => {
       const hidden = body.classList.contains("dsh-hidden");
