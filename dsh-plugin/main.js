@@ -865,16 +865,50 @@ class DSHChatView extends ItemView {
     super(leaf);
     this.plugin = plugin;
     this.session = null;
-    this.running = false;
     this.disposed = false;
     this.sessionsOpen = !!plugin.settings.showSessionList;
-    this.cancelToken = null;
-    this.statusTimer = null;
-    this.statusStart = 0;
-    this.live = null;
-    this._pendingThinking = null;
-    this.queue = [];
-    this.interjectQuery = null;
+    this.sessionCache = new Map(); // id -> session（保证多会话/切换时对象一致）
+    this.runs = new Map();         // id -> runState（每个会话独立的运行状态）
+  }
+
+  /* ---------- 多会话运行状态 ---------- */
+
+  getRun(sessionId) {
+    if (!this.runs.has(sessionId)) {
+      this.runs.set(sessionId, {
+        running: false,
+        cancelToken: null,
+        live: null,
+        pendingThinking: null,
+        queue: [],
+        interjectQuery: null,
+        statusStart: 0,
+        statusTimer: null,
+      });
+    }
+    return this.runs.get(sessionId);
+  }
+
+  get activeRun() {
+    return this.session ? this.getRun(this.session.id) : null;
+  }
+
+  rememberSession(s) {
+    if (s && s.id) this.sessionCache.set(s.id, s);
+  }
+
+  /** 切换当前会话（旧会话的 run 继续后台运行） */
+  setActiveSession(s) {
+    this.session = s;
+    this.rememberSession(s);
+    this.renderMessages();
+    this.renderLivePanelIfRunning();
+    this.updateHeader();
+    this.syncSelectionRow();
+    this.updateRunningUI(!!(this.activeRun && this.activeRun.running));
+    this.renderQueue();
+    this.renderSessionList();
+    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -950,12 +984,16 @@ class DSHChatView extends ItemView {
 
   onClose() {
     this.disposed = true;
-    if (this.statusTimer) clearInterval(this.statusTimer);
-    this.statusTimer = null;
-    if (this.cancelToken && this.cancelToken.cancel) {
-      this.cancelToken.cancelled = true;
-      this.cancelToken.cancel();
+    // 停止所有会话的运行
+    for (const run of this.runs.values()) {
+      if (run.statusTimer) clearInterval(run.statusTimer);
+      run.statusTimer = null;
+      if (run.cancelToken && run.cancelToken.cancel) {
+        run.cancelToken.cancelled = true;
+        run.cancelToken.cancel();
+      }
     }
+    this.runs.clear();
   }
 
   /* ---------- 选择器（模型/强度/权限） ---------- */
@@ -1033,14 +1071,21 @@ class DSHChatView extends ItemView {
   async renderSessionList() {
     this.sessionsListEl.empty();
     const sessions = await this.plugin.listSessions();
-    if (sessions.length === 0) {
+    // 用缓存覆盖磁盘（运行中的会话可能比磁盘新），并补上缓存里有但磁盘还没有的新会话
+    const merged = sessions.map((s) => this.sessionCache.get(s.id) || s);
+    for (const [id, s] of this.sessionCache) {
+      if (!merged.some((m) => m.id === id)) merged.push(s);
+    }
+    merged.sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0));
+    if (merged.length === 0) {
       this.sessionsListEl.createDiv({ cls: "dsh-sessions-empty", text: "暂无会话" });
       return;
     }
-    for (const s of sessions.slice(0, 100)) {
+    for (const s of merged.slice(0, 100)) {
+      const running = !!(this.getRun(s.id).running);
       const item = this.sessionsListEl.createDiv({ cls: "dsh-session-item" + (this.session && this.session.id === s.id ? " is-active" : "") });
       const main = item.createDiv({ cls: "dsh-session-main" });
-      main.createDiv({ cls: "dsh-session-title", text: s.title || "未命名" });
+      main.createDiv({ cls: "dsh-session-title", text: (running ? "⏳ " : "") + (s.title || "未命名") });
       main.createDiv({ cls: "dsh-session-time", text: fmtTime(s.lastActivityAt) });
       item.addEventListener("click", (e) => {
         if (e.target.closest(".dsh-session-del")) return;
@@ -1058,21 +1103,15 @@ class DSHChatView extends ItemView {
   }
 
   async loadSession(s) {
-    this.session = s;
-    this.renderMessages();
-    this.updateHeader();
-    this.syncSelectionRow();
-    this.renderSessionList();
-    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    const sess = (s && this.sessionCache.get(s.id)) || s;
+    // 点的是当前正在运行的会话：不重载，避免清掉实时面板
+    if (this.session && sess && this.session.id === sess.id && this.activeRun && this.activeRun.running) return;
+    this.setActiveSession(sess);
   }
 
   newSession() {
-    if (this.running) return;
-    this.session = null;
-    this.renderMessages();
-    this.updateHeader();
-    this.syncSelectionRow();
-    this.renderSessionList();
+    // 运行中也可新建：旧会话的 run 继续后台运行
+    this.setActiveSession(null);
   }
 
   /* ---------- 消息渲染 ---------- */
@@ -1267,7 +1306,7 @@ class DSHChatView extends ItemView {
   /* ---------- 发送 / 排队 / 中断 ---------- */
 
   onSendButton() {
-    if (this.running) this.cancel();
+    if (this.activeRun && this.activeRun.running) this.cancel();
     else this.onSend();
   }
 
@@ -1275,16 +1314,25 @@ class DSHChatView extends ItemView {
     if (this.disposed) return;
     const query = this.inputEl.value.trim();
     if (!query) return;
-    if (this.running) {
-      // 运行中：加入排队
-      this.queue.push(query);
-      this.inputEl.value = "";
+    if (!this.session) {
+      this.session = this.plugin.newSessionRecord(query);
+      this.rememberSession(this.session);
+      this.updateHeader();
+    }
+    const session = this.session;
+    const snap = this.selectionSnapshot();
+    session.model = snap.model;
+    session.effort = snap.effort;
+    session.permission = snap.permission;
+    const run = this.getRun(session.id);
+    this.inputEl.value = "";
+    if (run.running) {
+      run.queue.push(query);
       this.renderQueue();
-      new Notice("已加入排队（" + this.queue.length + " 条），当前任务完成后自动运行");
+      new Notice("已加入排队（" + run.queue.length + " 条），当前任务完成后自动运行");
       return;
     }
-    this.inputEl.value = "";
-    await this.runOne(query);
+    await this.runOne(session, query);
   }
 
   /** 插话：中断当前任务，立即带着上下文处理新消息（优先于排队） */
@@ -1292,40 +1340,49 @@ class DSHChatView extends ItemView {
     if (this.disposed) return;
     const query = this.inputEl.value.trim();
     if (!query) return;
+    if (!this.session) {
+      this.session = this.plugin.newSessionRecord(query);
+      this.rememberSession(this.session);
+      this.updateHeader();
+    }
+    const session = this.session;
+    const snap = this.selectionSnapshot();
+    session.model = snap.model;
+    session.effort = snap.effort;
+    session.permission = snap.permission;
+    const run = this.getRun(session.id);
     this.inputEl.value = "";
-    if (this.running) {
+    if (run.running) {
       this.cancel(); // 中断当前并清空排队
-      this.interjectQuery = query;
+      run.interjectQuery = query;
       new Notice("已插话，正在中断当前任务…");
     } else {
-      this.interjectQuery = query;
-      this.runNext();
+      run.interjectQuery = query;
+      this.runNextFor(session, run);
     }
   }
 
   /** 处理下一个任务：插话 > 排队 > 无 */
-  async runNext() {
+  async runNextFor(session, run) {
     if (this.disposed) return;
-    if (this.interjectQuery != null) {
-      const q = this.interjectQuery;
-      this.interjectQuery = null;
-      this.renderQueue();
-      await this.runOne(q);
-    } else if (this.queue.length > 0) {
-      const q = this.queue.shift();
-      this.renderQueue();
-      await this.runOne(q);
-    } else {
-      this.renderQueue();
+    if (run.interjectQuery != null) {
+      const q = run.interjectQuery;
+      run.interjectQuery = null;
+      await this.runOne(session, q);
+    } else if (run.queue.length > 0) {
+      const q = run.queue.shift();
+      await this.runOne(session, q);
     }
+    if (this.session && this.session.id === session.id) this.renderQueue();
   }
 
   cancel() {
-    if (!this.running || !this.cancelToken) return;
-    this.cancelToken.cancelled = true;
-    if (this.cancelToken.cancel) this.cancelToken.cancel();
-    this.queue.length = 0; // 清空排队
-    this.interjectQuery = null;
+    const run = this.activeRun;
+    if (!run || !run.running || !run.cancelToken) return;
+    run.cancelToken.cancelled = true;
+    if (run.cancelToken.cancel) run.cancelToken.cancel();
+    run.queue.length = 0; // 清空排队
+    run.interjectQuery = null;
     this.renderQueue();
     new Notice("正在停止…");
   }
@@ -1334,13 +1391,14 @@ class DSHChatView extends ItemView {
   renderQueue() {
     if (!this.queueEl) return;
     this.queueEl.empty();
-    if (this.queue.length === 0) {
+    const run = this.activeRun;
+    if (!run || run.queue.length === 0) {
       this.queueEl.addClass("dsh-hidden");
       return;
     }
     this.queueEl.removeClass("dsh-hidden");
-    this.queueEl.createDiv({ cls: "dsh-queue-header", text: "排队中 " + this.queue.length + " 条（完成后自动运行）" });
-    this.queue.forEach((q, idx) => {
+    this.queueEl.createDiv({ cls: "dsh-queue-header", text: "排队中 " + run.queue.length + " 条（完成后自动运行）" });
+    run.queue.forEach((q, idx) => {
       const item = this.queueEl.createDiv({ cls: "dsh-queue-item" });
       const text = item.createDiv({ cls: "dsh-queue-text", text: q });
       text.setAttribute("title", q);
@@ -1361,7 +1419,9 @@ class DSHChatView extends ItemView {
   }
 
   queueEdit(idx) {
-    const q = this.queue.splice(idx, 1)[0];
+    const run = this.activeRun;
+    if (!run) return;
+    const q = run.queue.splice(idx, 1)[0];
     if (q == null) return;
     this.inputEl.value = q;
     this.renderQueue();
@@ -1369,65 +1429,73 @@ class DSHChatView extends ItemView {
   }
 
   queueRemove(idx) {
-    this.queue.splice(idx, 1);
+    const run = this.activeRun;
+    if (!run) return;
+    run.queue.splice(idx, 1);
     this.renderQueue();
   }
 
   /** 把某条排队项立刻插话发送：中断当前，立即处理它 */
   queueInterject(idx) {
-    const q = this.queue.splice(idx, 1)[0];
+    const run = this.activeRun;
+    const session = this.session;
+    if (!run || !session) return;
+    const q = run.queue.splice(idx, 1)[0];
     if (q == null) return;
-    if (this.running) {
+    if (run.running) {
       this.cancel(); // 中断当前并清空其余排队
-      this.interjectQuery = q;
+      run.interjectQuery = q;
       new Notice("已插话发送…");
     } else {
-      this.interjectQuery = q;
-      this.runNext();
+      run.interjectQuery = q;
+      this.runNextFor(session, run);
     }
   }
 
-  async runOne(query) {
-    this.running = true;
-    this.updateRunningUI(true);
+  async runOne(session, query) {
+    const run = this.getRun(session.id);
+    run.sessionId = session.id;
+    run.running = true;
+    if (this.session && this.session.id === session.id) this.updateRunningUI(true);
 
     try {
-      if (!this.session) {
-        this.session = this.plugin.newSessionRecord(query);
-      }
-      const sel = this.selectionSnapshot();
-      this.session.model = sel.model;
-      this.session.effort = sel.effort;
-      this.session.permission = sel.permission;
-      this.session.lastActivityAt = Date.now();
+      // 使用会话自身记录的选择（发送/插话时已固化）；后台会话运行时不读当前活动会话的选择器
+      const sel = {
+        model: session.model || this.plugin.settings.defaultModel || "deepseek-v4-flash",
+        effort: session.effort || this.plugin.settings.defaultEffort || "high",
+        permission: session.permission || this.plugin.settings.permissionMode || "workspace-write",
+      };
+      session.model = sel.model;
+      session.effort = sel.effort;
+      session.permission = sel.permission;
+      session.lastActivityAt = Date.now();
 
       // 按所选模型/思考强度准备 runtime home（每次启动重读 settings.yaml）
       const homeRes = await this.plugin.applyAgentSelection(sel.model, sel.effort);
       if (!homeRes.ok) {
-        this.session.messages.push({
+        session.messages.push({
           role: "error",
           content: "无法准备 DSH runtime home：" + (homeRes.error || "未知错误"),
           ts: Date.now(),
         });
-        await this.plugin.saveSession(this.session);
-        this.renderMessages();
-        this.updateHeader();
+        await this.plugin.saveSession(session);
+        if (this.session && this.session.id === session.id) { this.renderMessages(); this.updateHeader(); }
         return;
       }
 
       const ctx = await this.getContextBlocks();
-      const taskText = this.plugin.buildTaskText(this.session, query, ctx);
+      const taskText = this.plugin.buildTaskText(session, query, ctx);
 
-      this.session.messages.push({ role: "user", content: query, ts: Date.now(), notePath: ctx.notePath || undefined, selection: ctx.selectionText || undefined });
-      this.renderMessages();
-      this.updateHeader();
+      session.messages.push({ role: "user", content: query, ts: Date.now(), notePath: ctx.notePath || undefined, selection: ctx.selectionText || undefined });
+      await this.plugin.saveSession(session); // 立即持久化用户消息
+      if (this.session && this.session.id === session.id) { this.renderMessages(); this.updateHeader(); }
 
-      this.cancelToken = { cancelled: false };
-      this.statusStart = Date.now();
-      this.startThinking(sel);
-      if (!this.live) {
+      run.cancelToken = { cancelled: false };
+      run.statusStart = Date.now();
+      if (this.session && this.session.id === session.id) this.startThinking(run);
+      if (!run.live && this.session && this.session.id === session.id) {
         this.statusEl.setText("DSH 思考中… [" + sel.model + (sel.effort !== "high" ? " / " + sel.effort : "") + "]");
-        this.startStatusTimer();
+        this.startStatusTimer(run);
       }
 
       const res = await provider.runHeadless({
@@ -1439,47 +1507,49 @@ class DSHChatView extends ItemView {
         permissionMode: sel.permission,
         extraArgs: this.plugin.settings.extraArgs,
         timeoutMs: (this.plugin.settings.timeoutSec || 600) * 1000,
-        cancelToken: this.cancelToken,
-        live: this.live,
-        onEvent: (ev) => this.handleLiveEvent(ev),
+        cancelToken: run.cancelToken,
+        live: !!run.live,
+        onEvent: (ev) => this.handleLiveEvent(session, run, ev),
       });
 
       if (this.disposed) return;
 
-      if (this.live) this.finishThinking();
+      if (run.live) this.finishThinking(run);
+      const thinking = run.pendingThinking || null;
+      run.pendingThinking = null;
 
-      const thinking = this._pendingThinking || null;
-      this._pendingThinking = null;
       if (res.cancelled) {
         const partial = (res.stdout || "").trim();
-        this.session.messages.push({ role: "assistant", content: partial ? partial + "\n\n（已取消）" : "（已取消）", ts: Date.now(), thinking });
+        session.messages.push({ role: "assistant", content: partial ? partial + "\n\n（已取消）" : "（已取消）", ts: Date.now(), thinking });
       } else if (res.ok) {
         const answer = (res.stdout || "").trim();
-        this.session.messages.push({ role: "assistant", content: answer, ts: Date.now(), thinking });
+        session.messages.push({ role: "assistant", content: answer, ts: Date.now(), thinking });
       } else {
         const detail = (res.stderr || "").trim() || "未知错误";
-        this.session.messages.push({
+        session.messages.push({
           role: "error",
           content: detail + "\n\n（若为启动失败：请到 设置 → DSH → 测试连接 检查 dsh 安装；若为凭据缺失：请确认 DSH_HOME 下存在 .credentials.yaml）",
           ts: Date.now(),
           thinking,
         });
       }
-      this.session.lastActivityAt = Date.now();
-      await this.plugin.saveSession(this.session);
-      this.renderMessages();
-      this.updateHeader();
-      if (this.sessionsOpen) this.renderSessionList();
+      session.lastActivityAt = Date.now();
+      await this.plugin.saveSession(session);
+      if (this.session && this.session.id === session.id) {
+        this.renderMessages();
+        this.updateHeader();
+        if (this.sessionsOpen) this.renderSessionList();
+      } else {
+        this.renderSessionList(); // 后台会话完成：更新列表
+      }
     } finally {
-      this.running = false;
-      this.updateRunningUI(false);
+      run.running = false;
+      if (this.session && this.session.id === session.id) this.updateRunningUI(false);
     }
-    // 处理下一个：插话优先，其次排队
-    await this.runNext();
+    await this.runNextFor(session, run);
   }
 
   updateRunningUI(running) {
-    // 输入框保持可用（运行中可继续输入，Enter 入队）
     this.sendBtn.setText(running ? "停止" : "发送");
     if (!running) {
       this.stopStatusTimer();
@@ -1488,81 +1558,98 @@ class DSHChatView extends ItemView {
     }
   }
 
-  startStatusTimer() {
+  startStatusTimer(run) {
+    const r = run || this.activeRun;
+    if (!r) return;
     this.stopStatusTimer();
     this.statusEl.removeClass("dsh-hidden");
-    this.statusTimer = setInterval(() => {
+    r.statusTimer = setInterval(() => {
       if (this.disposed) return;
-      const sec = Math.round((Date.now() - this.statusStart) / 1000);
+      const sec = Math.round((Date.now() - r.statusStart) / 1000);
       this.statusEl.setText("DSH 思考中… " + sec + "s（超时 " + (this.plugin.settings.timeoutSec || 600) + "s）");
     }, 1000);
   }
 
   stopStatusTimer() {
-    if (this.statusTimer) clearInterval(this.statusTimer);
-    this.statusTimer = null;
+    const r = this.activeRun;
+    if (r && r.statusTimer) { clearInterval(r.statusTimer); r.statusTimer = null; }
   }
 
   /* ---------- 思考过程（实时推理 + 工具调用 + 文本流） ---------- */
 
-  startThinking(sel) {
-    this.live = this.plugin.settings.showThinking ? { reasoning: "", tools: [], text: "", collapsed: true, steps: 0 } : null;
-    this._pendingThinking = null;
-    if (!this.live) return;
+  startThinking(run) {
+    run.live = this.plugin.settings.showThinking ? { reasoning: "", tools: [], text: "", steps: 0 } : null;
+    run.pendingThinking = null;
+    if (!run.live) return;
+    this.renderLivePanel(run);
+  }
+
+  /** 重建实时思考面板 DOM（开始运行时 & 切回运行中会话时共用） */
+  renderLivePanel(run) {
     const wrap = this.messagesEl.createDiv({ cls: "dsh-live" });
     const head = wrap.createDiv({ cls: "dsh-thinking-head", attr: { title: "点击展开/收起" } });
     head.createSpan({ cls: "dsh-thinking-emoji", text: "🧠" });
-    this.thinkingTimeEl = head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · 0s（点击展开）" });
-    this.liveHead = head;
+    const sec = Math.round((Date.now() - run.statusStart) / 1000);
+    this.thinkingTimeEl = head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · " + sec + "s（点击展开）" });
     const body = wrap.createDiv({ cls: "dsh-thinking-body dsh-hidden" });
-    this.thinkingReasonEl = body.createDiv({ cls: "dsh-thinking-reason" });
+    this.thinkingReasonEl = body.createDiv({ cls: "dsh-thinking-reason", text: (run.live && run.live.reasoning) || "" });
     this.thinkingToolsEl = body.createDiv({ cls: "dsh-thinking-tools" });
+    if (run.live && run.live.tools) {
+      for (const t of run.live.tools) this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: t });
+    }
     this.liveBody = body;
-    this.liveWrap = wrap;
     head.addEventListener("click", () => {
       if (!this.liveBody) return;
       if (this.liveBody.classList.contains("dsh-hidden")) this.liveBody.classList.remove("dsh-hidden");
       else this.liveBody.classList.add("dsh-hidden");
     });
-    // 计时
-    this.stopStatusTimer();
-    this.statusTimer = setInterval(() => {
-      if (this.disposed || !this.live) return;
-      const sec = Math.round((Date.now() - this.statusStart) / 1000);
-      this.thinkingTimeEl.setText("思考过程 · " + sec + "s（点击展开）");
+    if (run.statusTimer) clearInterval(run.statusTimer);
+    run.statusTimer = setInterval(() => {
+      if (this.disposed || !run.running || !run.live) return;
+      if (this.session && this.session.id === run.sessionId && this.thinkingTimeEl) {
+        const s2 = Math.round((Date.now() - run.statusStart) / 1000);
+        this.thinkingTimeEl.setText("思考过程 · " + s2 + "s（点击展开）");
+      }
     }, 1000);
   }
 
-  handleLiveEvent(ev) {
-    if (!this.live || this.disposed) return;
+  renderLivePanelIfRunning() {
+    const run = this.activeRun;
+    if (!run || !run.running || !run.live) return;
+    this.renderLivePanel(run);
+  }
+
+  handleLiveEvent(session, run, ev) {
+    if (this.disposed || !run || !run.live) return;
+    const isActive = !!(this.session && this.session.id === session.id);
     try {
       const d = ev.data || {};
       if (ev.type === "reasoning-chunks" && Array.isArray(d.texts)) {
-        this.live.reasoning += d.texts.join("");
-        if (this.thinkingReasonEl) this.thinkingReasonEl.setText(this.live.reasoning.trimEnd());
-        this.live.steps += 1;
+        run.live.reasoning += d.texts.join("");
+        if (isActive && this.thinkingReasonEl) this.thinkingReasonEl.setText(run.live.reasoning.trimEnd());
+        run.live.steps += 1;
       } else if (ev.type === "tool-call-chunks" && d.name) {
         const args = (Array.isArray(d.args) ? d.args.join("") : String(d.args || "")).replace(/\s+/g, " ").slice(0, 90);
-        this.live.tools.push("⚙ " + d.name + (args ? "  " + args : ""));
-        if (this.thinkingToolsEl) {
-          const line = this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: this.live.tools[this.live.tools.length - 1] });
-          line.setAttribute("title", this.live.tools[this.live.tools.length - 1]);
+        run.live.tools.push("⚙ " + d.name + (args ? "  " + args : ""));
+        if (isActive && this.thinkingToolsEl) {
+          const line = this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: run.live.tools[run.live.tools.length - 1] });
+          line.setAttribute("title", run.live.tools[run.live.tools.length - 1]);
         }
-        this.live.steps += 1;
+        run.live.steps += 1;
       } else if (ev.type === "tool/call" && d.name) {
         // 去重（tool-call-chunks 已展示过同一 id 时不重复）
-        if (this.live.tools.some((t) => t.indexOf(d.name) >= 0)) return;
+        if (run.live.tools.some((t) => t.indexOf(d.name) >= 0)) return;
         const args = String(d.arguments || "").replace(/\s+/g, " ").slice(0, 90);
-        this.live.tools.push("⚙ " + d.name + (args ? "  " + args : ""));
-        if (this.thinkingToolsEl) {
-          const line = this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: this.live.tools[this.live.tools.length - 1] });
-          line.setAttribute("title", this.live.tools[this.live.tools.length - 1]);
+        run.live.tools.push("⚙ " + d.name + (args ? "  " + args : ""));
+        if (isActive && this.thinkingToolsEl) {
+          const line = this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: run.live.tools[run.live.tools.length - 1] });
+          line.setAttribute("title", run.live.tools[run.live.tools.length - 1]);
         }
-        this.live.steps += 1;
+        run.live.steps += 1;
       } else if (ev.type === "text-chunks" && Array.isArray(d.texts)) {
-        this.live.text += d.texts.join("");
+        run.live.text += d.texts.join("");
       }
-      this.scrollToBottomIfNear();
+      if (isActive) this.scrollToBottomIfNear();
     } catch (e) { /* ignore */ }
   }
 
@@ -1574,21 +1661,22 @@ class DSHChatView extends ItemView {
     if (distance < 60) el.scrollTop = el.scrollHeight;
   }
 
-  finishThinking() {
-    if (!this.live) return;
-    const sec = Math.round((Date.now() - this.statusStart) / 1000);
-    // 思考内容存入会话消息（renderMessages 时确定性重建折叠面板，不可能消失）
-    this._pendingThinking = {
-      reasoning: this.live.reasoning.trim().slice(0, 6000),
-      tools: this.live.tools.slice(0, 40),
+  finishThinking(run) {
+    if (!run || !run.live) return;
+    const sec = Math.round((Date.now() - run.statusStart) / 1000);
+    // 思考内容存入会话消息（renderMessages 时确定性重建折叠面板）
+    run.pendingThinking = {
+      reasoning: run.live.reasoning.trim().slice(0, 6000),
+      tools: run.live.tools.slice(0, 40),
       seconds: sec,
     };
-    // 折叠运行中的实时面板
     try {
-      if (this.liveBody) this.liveBody.addClass("dsh-hidden");
-      if (this.thinkingTimeEl) this.thinkingTimeEl.setText("思考过程 · " + sec + "s · " + this.live.tools.length + " 步工具（点击展开）");
+      if (this.session && this.session.id === run.sessionId) {
+        if (this.liveBody) this.liveBody.addClass("dsh-hidden");
+        if (this.thinkingTimeEl) this.thinkingTimeEl.setText("思考过程 · " + sec + "s · " + run.live.tools.length + " 步工具（点击展开）");
+      }
     } catch (e) { /* ignore */ }
-    this.live = null;
+    run.live = null;
   }
 
   updateHeader() {

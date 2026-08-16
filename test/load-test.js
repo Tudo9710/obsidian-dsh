@@ -231,20 +231,25 @@ const mockApp = () => ({
     const leaf = { app: plugin.app };
     const view = plugin._viewFactory(leaf);
     await view.onOpen();
-    view.session = {
+    const session = {
       id: "conv-test-2",
       title: "测试2",
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
       messages: [{ role: "user", content: "hi", ts: Date.now() }],
     };
-    view.statusStart = Date.now();
-    view.startThinking({ model: "deepseek-v4-flash", effort: "high" });
-    view.handleLiveEvent({ type: "reasoning-chunks", data: { texts: ["The", " user", " wants"] } });
-    view.handleLiveEvent({ type: "tool-call-chunks", data: { name: "read", args: ["{", "\"file_path\"", ": \"README.md\"}"] } });
-    view.finishThinking();
-    const thinking = view._pendingThinking;
-    view.session.messages.push({ role: "assistant", content: "答案", ts: Date.now(), thinking });
+    view.session = session;
+    view.rememberSession(session);
+    const run = view.getRun(session.id);
+    run.sessionId = session.id;
+    run.running = true;
+    run.statusStart = Date.now();
+    view.startThinking(run);
+    view.handleLiveEvent(session, run, { type: "reasoning-chunks", data: { texts: ["The", " user", " wants"] } });
+    view.handleLiveEvent(session, run, { type: "tool-call-chunks", data: { name: "read", args: ["{", "\"file_path\"", ": \"README.md\"}"] } });
+    view.finishThinking(run);
+    const thinking = run.pendingThinking;
+    session.messages.push({ role: "assistant", content: "答案", ts: Date.now(), thinking });
     // 再 renderMessages 两次，模拟重建/重载——面板必须每次都出现
     for (let pass = 1; pass <= 2; pass++) {
       view.renderMessages();
