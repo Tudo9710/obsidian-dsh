@@ -5,7 +5,7 @@
  * 「只有一个 agent = DSH」的单代理版：
  *   - 聊天面板：每条消息 spawn `dsh --profile headless <任务>`（vault 为工作目录）
  *   - 会话历史：存于 <vault>/.dsh/sessions/conv-*.json
- *   - 上下文：自动附带当前笔记（<linked_note>）与编辑器选区（<editor_selection>）
+ *   - 上下文：自动附带当前笔记（<linked_note>）
  *   - 设置页：dsh 命令 / node 路径 / DSH_HOME / 额外参数（--patch）/ 系统提示 / 超时
  *
  * 纯 CommonJS + 无构建：直接拷入 .obsidian/plugins/dsh 即可。
@@ -579,7 +579,6 @@ const DEFAULT_SETTINGS = {
   customPrompt: "",      // 附加系统提示（追加在内置提示之后）
   timeoutSec: 600,
   autoAttachNote: true,
-  autoAttachSelection: true,
   enterToSend: true,
   showThinking: true, // 实时显示思考过程（推理文本 + 工具调用）
 };
@@ -590,7 +589,7 @@ const BUILTIN_PROMPT = [
   "- 库内文件均为 Markdown；尊重 YAML frontmatter、[[wikilink]]、#标签 与 dataview 代码块，不主动破坏。",
   "- 回复中提及库内文件时使用 [[wikilink]] 形式（可点击）；展示图片用 ![[文件名.png]]。",
   "- 涉及库内路径一律用相对库根的相对路径，不要使用盘符绝对路径。",
-  "- 用户消息 = 查询在前，其后可能跟随 XML 上下文标签：<linked_note path=\"...\"/>、<editor_selection path=\"...\" lines=\"a-b\"> 等；标签内文本是用户原文，按字面理解。",
+  "- 用户消息 = 查询在前，其后可能跟随 XML 上下文标签：<linked_note path=\"...\"/>、<note_content path=\"...\"> 等；标签内文本是用户原文，按字面理解。",
   "- 涉及文件操作前先读取相关文件；不确定的事实与数字须说明来源或标注缺口，禁止编造。",
   "- 默认使用中文回复，输出紧凑、可直接执行。",
   "- \"对话记录\" 中的历史轮次供你维持上下文，不要重复提问已确认的信息。",
@@ -1083,22 +1082,9 @@ class DSHChatView extends ItemView {
     }
     const on = this.session ? this.session.autoAttach !== false : this.autoAttachOverride !== false;
     this.autoMentionEl.removeClass("dsh-hidden");
-    // 只有编辑器里真的有选中文本时，才显示选区内容
-    let selText = null;
-    if (s.autoAttachSelection) {
-      try {
-        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-        if (view && view.editor) {
-          const t = view.editor.getSelection();
-          if (t && t.trim()) selText = t.trim();
-        }
-      } catch (e) { /* ignore */ }
-    }
-    let text = "自动附加：@" + file.basename;
-    if (selText) text += "（选区：" + truncate(selText, 30) + "）";
-    this.autoMentionBadge.setText(text);
+    this.autoMentionBadge.setText("自动附加：@" + file.basename);
     this.autoMentionBadge.classList.toggle("agent-client-disabled", !on);
-    this.autoMentionEl.setAttribute("title", on ? "发送时自动附带当前笔记" + (selText ? "与选中内容" : "") + "；点击关闭" : "自动附带已关闭；点击恢复");
+    this.autoMentionEl.setAttribute("title", on ? "发送时自动附带当前笔记；点击关闭" : "自动附带已关闭；点击恢复");
   }
 
   /** 头部导航按钮（与 Obsidian 侧栏按钮一致的 icon 按钮） */
@@ -1381,7 +1367,7 @@ class DSHChatView extends ItemView {
       if (m.notePath) {
         const name = String(m.notePath).split("/").pop().replace(/\.md$/i, "");
         const chip = txt.createSpan({ cls: "agent-client-text-mention", text: "@" + name });
-        chip.setAttribute("title", m.notePath + (m.selection ? "（含选区）" : ""));
+        chip.setAttribute("title", m.notePath);
         chip.addEventListener("click", () => this.openInternalLink(m.notePath));
       }
     } else if (m.role === "error") {
@@ -1547,40 +1533,14 @@ class DSHChatView extends ItemView {
   /* ---------- 发送 ---------- */
 
   async getContextBlocks(query) {
-    const out = { blocks: "", notePath: null, selectionText: null };
+    const out = { blocks: "", notePath: null };
     const s = this.plugin.settings;
     const attach = this.session ? this.session.autoAttach !== false : this.autoAttachOverride !== false; // 会话级开关
     const file = this.app.workspace.getActiveFile();
     let notePath = null;
-    let selection = null;
     if (s.autoAttachNote && attach && file) notePath = file.path;
-    if (s.autoAttachSelection && attach) {
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (view && view.editor) {
-        const selText = view.editor.getSelection();
-        if (selText) {
-          const sels = view.editor.listSelections();
-          const a = sels[0] ? sels[0].anchor : null;
-          const h = sels[0] ? sels[0].head : null;
-          const from = a ? Math.min(a.line, h ? h.line : a.line) : 0;
-          const to = h ? Math.max(a.line, h.line) : from;
-          selection = {
-            path: file ? file.path : "",
-            fromLine: from + 1,
-            toLine: to + 1,
-            text: selText,
-          };
-        }
-      }
-    }
     const parts = [];
     if (notePath) parts.push('<linked_note path="' + notePath + '" />');
-    if (selection) {
-      parts.push(
-        '<editor_selection path="' + selection.path + '" lines="' + selection.fromLine + "-" + selection.toLine + '">\n<![CDATA[\n' +
-        selection.text + "\n]]>\n</editor_selection>"
-      );
-    }
     // @[[笔记]] 提及：附加对应笔记的路径 + 内容
     const mentions = this.parseMentions(query);
     for (const m of mentions) {
@@ -1598,7 +1558,6 @@ class DSHChatView extends ItemView {
     }
     out.blocks = parts.join("\n\n");
     out.notePath = notePath;
-    out.selectionText = selection ? selection.text : null;
     return out;
   }
 
@@ -1788,7 +1747,7 @@ class DSHChatView extends ItemView {
       const ctx = await this.getContextBlocks(query);
       const taskText = this.plugin.buildTaskText(session, query, ctx);
 
-      session.messages.push({ role: "user", content: query, ts: Date.now(), notePath: ctx.notePath || undefined, selection: ctx.selectionText || undefined });
+      session.messages.push({ role: "user", content: query, ts: Date.now(), notePath: ctx.notePath || undefined });
       await this.plugin.saveSession(session); // 立即持久化用户消息
       if (this.session && this.session.id === session.id) { this.renderMessages(); this.updateHeader(); }
 
@@ -2268,14 +2227,6 @@ class DSHSettingsTab extends PluginSettingTab {
       .setDesc("发送时把当前打开的笔记以 <linked_note> 附加给 DSH。")
       .addToggle((t) => t.setValue(this.plugin.settings.autoAttachNote).onChange(async (v) => {
         this.plugin.settings.autoAttachNote = v;
-        await this.plugin.saveSettings();
-      }));
-
-    new Setting(containerEl)
-      .setName("自动附带编辑器选区")
-      .setDesc("发送时把当前选中文本以 <editor_selection> 附加给 DSH。")
-      .addToggle((t) => t.setValue(this.plugin.settings.autoAttachSelection).onChange(async (v) => {
-        this.plugin.settings.autoAttachSelection = v;
         await this.plugin.saveSettings();
       }));
 
