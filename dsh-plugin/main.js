@@ -1427,15 +1427,15 @@ class DSHChatView extends ItemView {
   /* ---------- 思考过程（实时推理 + 工具调用 + 文本流） ---------- */
 
   startThinking(sel) {
-    this.live = this.plugin.settings.showThinking ? { reasoning: "", tools: [], text: "", collapsed: false, steps: 0 } : null;
+    this.live = this.plugin.settings.showThinking ? { reasoning: "", tools: [], text: "", collapsed: true, steps: 0 } : null;
     this._pendingThinking = null;
     if (!this.live) return;
     const wrap = this.messagesEl.createDiv({ cls: "dsh-live" });
     const head = wrap.createDiv({ cls: "dsh-thinking-head", attr: { title: "点击展开/收起" } });
     head.createSpan({ cls: "dsh-thinking-emoji", text: "🧠" });
-    this.thinkingTimeEl = head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · 0s" });
+    this.thinkingTimeEl = head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · 0s（点击展开）" });
     this.liveHead = head;
-    const body = wrap.createDiv({ cls: "dsh-thinking-body" });
+    const body = wrap.createDiv({ cls: "dsh-thinking-body dsh-hidden" });
     this.thinkingReasonEl = body.createDiv({ cls: "dsh-thinking-reason" });
     this.thinkingToolsEl = body.createDiv({ cls: "dsh-thinking-tools" });
     this.liveBody = body;
@@ -1450,7 +1450,7 @@ class DSHChatView extends ItemView {
     this.statusTimer = setInterval(() => {
       if (this.disposed || !this.live) return;
       const sec = Math.round((Date.now() - this.statusStart) / 1000);
-      this.thinkingTimeEl.setText("思考过程 · " + sec + "s");
+      this.thinkingTimeEl.setText("思考过程 · " + sec + "s（点击展开）");
     }, 1000);
   }
 
