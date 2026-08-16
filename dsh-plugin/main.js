@@ -1483,8 +1483,16 @@ class DSHChatView extends ItemView {
       } else if (ev.type === "text-chunks" && Array.isArray(d.texts)) {
         this.live.text += d.texts.join("");
       }
-      this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+      this.scrollToBottomIfNear();
     } catch (e) { /* ignore */ }
+  }
+
+  /** 智能滚动：仅当用户本来就贴近底部时才自动跟滚，手动上翻查看历史时不打扰 */
+  scrollToBottomIfNear() {
+    const el = this.messagesEl;
+    if (!el) return;
+    const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+    if (distance < 60) el.scrollTop = el.scrollHeight;
   }
 
   finishThinking() {
