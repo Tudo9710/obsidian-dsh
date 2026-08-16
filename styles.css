@@ -2396,3 +2396,13 @@ If your plugin does not need CSS, delete this file.
 	margin-bottom: 6px;
 	font-size: 0.82em;
 }
+
+/* ---- 用户消息：与 DSH 回复相同背景（恢复 1.1 的无框样式） ---- */
+.agent-client-message-renderer.agent-client-message-user {
+	background-color: transparent;
+	border: none;
+	border-radius: 0;
+	margin-left: 0;
+	margin-right: 0;
+	width: 100%;
+}

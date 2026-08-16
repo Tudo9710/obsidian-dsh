@@ -1608,6 +1608,8 @@ class DSHChatView extends ItemView {
     if (!query) return;
     if (!this.session) {
       this.session = this.plugin.newSessionRecord(query);
+      // 新会话继承「关闭自动附加」的切换（还没开始对话时点过 chip）
+      if (this.autoAttachOverride !== undefined) this.session.autoAttach = this.autoAttachOverride;
       this.rememberSession(this.session);
       this.updateHeader();
     }
@@ -1634,6 +1636,7 @@ class DSHChatView extends ItemView {
     if (!query) return;
     if (!this.session) {
       this.session = this.plugin.newSessionRecord(query);
+      if (this.autoAttachOverride !== undefined) this.session.autoAttach = this.autoAttachOverride;
       this.rememberSession(this.session);
       this.updateHeader();
     }
@@ -2134,7 +2137,6 @@ class DSHSettingsTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "DSH 设置" });
-    containerEl.createEl("p", { cls: "dsh-settings-desc", text: "DSH（DeepSeek Harness）是唯一接入的 agent。每条消息以 vault 为工作目录运行 dsh --profile headless，会话记录保存在 <vault>/.dsh/sessions/。" });
 
     /* ---------- 模型与默认值（参考原版 codex 面板：Discover 异步加载目录） ---------- */
     new Setting(containerEl).setName("模型与默认值").setHeading();
