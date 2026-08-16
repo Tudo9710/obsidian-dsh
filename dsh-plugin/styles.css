@@ -113,7 +113,9 @@
 }
 
 .dsh-queue-actions .dsh-icon-btn {
-  padding: 1px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
   --icon-size: 12px;
   border-radius: 4px;
 }
