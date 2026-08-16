@@ -1072,7 +1072,7 @@ class DSHChatView extends ItemView {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.updateAutoMentionChip()));
   }
 
-  /** 自动附带提示 chip：显示当前笔记名；点击切换，关闭后划线显示、可再点击恢复 */
+  /** 自动附带提示 chip：显示当前笔记名；有真实选区时显示选中内容；点击切换，关闭后划线 */
   updateAutoMentionChip() {
     if (!this.autoMentionEl || !this.autoMentionBadge) return;
     const file = this.app.workspace.getActiveFile();
@@ -1083,10 +1083,22 @@ class DSHChatView extends ItemView {
     }
     const on = this.session ? this.session.autoAttach !== false : this.autoAttachOverride !== false;
     this.autoMentionEl.removeClass("dsh-hidden");
-    const seg = s.autoAttachSelection ? "（含选区）" : "";
-    this.autoMentionBadge.setText("自动附加：@" + file.basename + seg);
+    // 只有编辑器里真的有选中文本时，才显示选区内容
+    let selText = null;
+    if (s.autoAttachSelection) {
+      try {
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (view && view.editor) {
+          const t = view.editor.getSelection();
+          if (t && t.trim()) selText = t.trim();
+        }
+      } catch (e) { /* ignore */ }
+    }
+    let text = "自动附加：@" + file.basename;
+    if (selText) text += "（选区：" + truncate(selText, 30) + "）";
+    this.autoMentionBadge.setText(text);
     this.autoMentionBadge.classList.toggle("agent-client-disabled", !on);
-    this.autoMentionEl.setAttribute("title", on ? "发送时自动附带当前笔记与选区；点击关闭" : "自动附带已关闭；点击恢复");
+    this.autoMentionEl.setAttribute("title", on ? "发送时自动附带当前笔记" + (selText ? "与选中内容" : "") + "；点击关闭" : "自动附带已关闭；点击恢复");
   }
 
   /** 头部导航按钮（与 Obsidian 侧栏按钮一致的 icon 按钮） */
@@ -1516,11 +1528,6 @@ class DSHChatView extends ItemView {
     if (messages.length === 0) {
       const g = this.messagesEl.createDiv({ cls: "dsh-greeting" });
       g.createDiv({ cls: "dsh-greeting-title", text: "我是 DSH（DeepSeek Harness）" });
-      g.createEl("ul").innerHTML = [
-        "<li>直接下达任务：我会在 vault 根目录里读取文件、检索资料并回答</li>",
-        "<li>会自动附带当前笔记与编辑器选区作为上下文</li>",
-        "<li>历史会话保存在 <code>.dsh/sessions/</code>，可随时切换</li>",
-      ].join("");
       return;
     }
     let lastPanelEl = null;
