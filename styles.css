@@ -2282,7 +2282,7 @@ If your plugin does not need CSS, delete this file.
 	.view-header-title-container {
 	visibility: hidden;
 }
-.dsh-hidden { display: none !important; }
+.dsh-hidden.dsh-hidden { display: none; }
 
 /* Thin status line above input */
 .dsh-status {
