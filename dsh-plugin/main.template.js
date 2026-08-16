@@ -46,10 +46,7 @@ const DEFAULT_SETTINGS = {
   autoAttachNote: true,
   autoAttachSelection: true,
   enterToSend: true,
-  showSessionList: true,
   showThinking: true, // 实时显示思考过程（推理文本 + 工具调用）
-  showFloatingButton: true, // 右下角可拖拽的浮动聊天按钮
-  floatingButtonPos: null,  // {x,y} 拖拽后的位置（null = 默认右下角）
 };
 
 const BUILTIN_PROMPT = [
@@ -102,11 +99,6 @@ class DSHPlugin extends Plugin {
       },
     });
     this.addCommand({
-      id: "toggle-dsh-floating-chat",
-      name: "切换 DSH 浮动聊天窗",
-      callback: () => this.toggleFloatingChat(),
-    });
-    this.addCommand({
       id: "open-dsh-session-manager",
       name: "打开 DSH 会话管理器",
       callback: () => this.activateSessionManager(),
@@ -135,160 +127,10 @@ class DSHPlugin extends Plugin {
     });
 
     this.addSettingTab(new DSHSettingsTab(this.app, this));
-
-    this.createFloatingButton();
   }
 
   onunload() {
-    this.closeFloatingChat();
-    if (this._floatBtnCleanup) { try { this._floatBtnCleanup(); } catch (e) { /* ignore */ } }
-    if (this._floatBtn && this._floatBtn.parentNode) {
-      try { this._floatBtn.parentNode.removeChild(this._floatBtn); } catch (e) { /* ignore */ }
-    }
-    this._floatBtn = null;
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
-  }
-
-  /* ---------- 浮动聊天窗（参考 agent-client 的 FloatingChatView + FloatingButton） ---------- */
-
-  toggleFloatingChat() {
-    if (this._floating && this._floating.win && this._floating.win.isConnected) {
-      this.closeFloatingChat();
-    } else {
-      this.openFloatingChat();
-    }
-  }
-
-  openFloatingChat() {
-    if (this._floating && this._floating.win && this._floating.win.isConnected) return;
-    const win = document.body.createDiv({ cls: "agent-client-floating-window" });
-    win.style.left = Math.max(16, window.innerWidth - 420) + "px";
-    win.style.top = "80px";
-    win.style.width = "370px";
-    win.style.height = "580px";
-
-    // inline 头部（可拖拽移动窗口）
-    const header = win.createDiv({ cls: "agent-client-floating-header" });
-    const inline = header.createDiv({ cls: "agent-client-inline-header" });
-    const main = inline.createDiv({ cls: "agent-client-inline-header-main" });
-    main.createSpan({ cls: "agent-client-agent-label", text: "DSH" });
-    const actions = inline.createDiv({ cls: "agent-client-inline-header-actions" });
-    const closeBtn = actions.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "关闭", title: "关闭" } });
-    setIcon(closeBtn, "x");
-    closeBtn.addEventListener("click", () => this.closeFloatingChat());
-
-    const content = win.createDiv({ cls: "agent-client-floating-content" });
-
-    // 同一视图类挂载进浮动窗（共享会话存储，独立运行状态）
-    const fakeLeaf = { app: this.app };
-    const view = new DSHChatView(fakeLeaf, this);
-    view.floating = true;
-    view.mountTo(content).catch((e) => this.logError("floating-mount", e));
-
-    // 拖拽
-    let dragging = false, dx = 0, dy = 0;
-    const onMove = (e) => {
-      if (!dragging) return;
-      win.style.left = (e.clientX - dx) + "px";
-      win.style.top = (e.clientY - dy) + "px";
-    };
-    const onUp = () => { dragging = false; };
-    header.addEventListener("mousedown", (e) => {
-      dragging = true;
-      dx = e.clientX - win.offsetLeft;
-      dy = e.clientY - win.offsetTop;
-      e.preventDefault();
-    });
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-
-    this._floating = { win, view, onMove, onUp, closeBtn };
-    document.body.appendChild(win);
-  }
-
-  closeFloatingChat() {
-    const f = this._floating;
-    if (!f) return;
-    try {
-      if (f.view) { f.view.onClose(); f.view.disposed = true; }
-    } catch (e) { /* ignore */ }
-    try {
-      if (f.win && f.win.parentNode) f.win.parentNode.removeChild(f.win);
-    } catch (e) { /* ignore */ }
-    try {
-      document.removeEventListener("mousemove", f.onMove);
-      document.removeEventListener("mouseup", f.onUp);
-    } catch (e) { /* ignore */ }
-    this._floating = null;
-  }
-
-  /** 右下角浮动聊天按钮（可拖拽；单击开/关浮动窗；拖动记忆位置） */
-  createFloatingButton() {
-    if (this._floatBtn) return;
-    if (!this.settings.showFloatingButton) return;
-    if (typeof document === "undefined" || !document.body) return;
-    const btn = document.body.createDiv({ cls: "agent-client-floating-button" });
-    const fallback = btn.createDiv({ cls: "agent-client-floating-button-fallback" });
-    setIcon(fallback, "bot");
-    btn.setAttribute("aria-label", "DSH 浮动聊天");
-    btn.setAttribute("title", "DSH 浮动聊天");
-    const pos = this.settings.floatingButtonPos;
-    if (pos && pos.x != null && pos.y != null) {
-      btn.style.left = pos.x + "px";
-      btn.style.top = pos.y + "px";
-      btn.style.bottom = "auto";
-      btn.style.right = "auto";
-    }
-    let dragging = false, moved = 0, sx = 0, sy = 0;
-    btn.addEventListener("mousedown", (e) => {
-      dragging = true;
-      moved = 0;
-      sx = e.clientX; sy = e.clientY;
-      btn.addClass("is-dragging");
-      e.preventDefault();
-    });
-    const onMove = (e) => {
-      if (!dragging) return;
-      const dx = e.clientX - sx, dy = e.clientY - sy;
-      moved = Math.max(moved, Math.abs(dx), Math.abs(dy));
-      const rect = btn.getBoundingClientRect();
-      btn.style.left = (rect.left + dx) + "px";
-      btn.style.top = (rect.top + dy) + "px";
-      btn.style.bottom = "auto";
-      btn.style.right = "auto";
-      sx = e.clientX; sy = e.clientY;
-    };
-    const onUp = () => {
-      if (!dragging) return;
-      dragging = false;
-      btn.removeClass("is-dragging");
-      if (moved < 5) {
-        this.toggleFloatingChat();
-      } else {
-        const rect = btn.getBoundingClientRect();
-        this.settings.floatingButtonPos = { x: rect.left, y: rect.top };
-        this.saveSettings();
-      }
-    };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
-    this._floatBtn = btn;
-    this._floatBtnCleanup = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
-    };
-    document.body.appendChild(btn);
-  }
-
-  /** 设置变化后重建浮动按钮（显示/隐藏） */
-  refreshFloatingButton() {
-    if (this._floatBtnCleanup) { try { this._floatBtnCleanup(); } catch (e) { /* ignore */ } }
-    if (this._floatBtn && this._floatBtn.parentNode) {
-      try { this._floatBtn.parentNode.removeChild(this._floatBtn); } catch (e) { /* ignore */ }
-    }
-    this._floatBtn = null;
-    this._floatBtnCleanup = null;
-    this.createFloatingButton();
   }
 
   /* ---------- 错误日志（排查卡死/异常用，写到插件目录 error.log） ---------- */
@@ -544,8 +386,7 @@ class DSHChatView extends ItemView {
     this.plugin = plugin;
     this.session = null;
     this.disposed = false;
-    this.floating = false; // 浮动窗模式：无侧栏头部/会话面板
-    this.sessionsOpen = !!plugin.settings.showSessionList;
+    this.floating = false; // 内嵌（代码块）模式：无侧栏头部
     this.sessionCache = new Map(); // id -> session（保证多会话/切换时对象一致）
     this.runs = new Map();         // id -> runState（每个会话独立的运行状态）
   }
@@ -592,7 +433,6 @@ class DSHChatView extends ItemView {
     this.syncSelectionRow();
     this.updateRunningUI(!!(this.activeRun && this.activeRun.running));
     this.renderQueue();
-    this.renderSessionList();
     this.updateAutoMentionChip();
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
@@ -617,10 +457,6 @@ class DSHChatView extends ItemView {
       this.historyBtn = this.navActionBtn(navBtns, "history", "会话历史", () => this.openHistoryModal());
       this.exportBtn = this.navActionBtn(navBtns, "save", "导出为 Markdown", () => this.exportChat());
       this.moreBtn = this.navActionBtn(navBtns, "more-vertical", "更多", (e) => this.showHeaderMenu(e));
-
-      /* 会话列表（可折叠） */
-      this.sessionsPanel = container.createDiv({ cls: "dsh-sessions-panel" + (this.sessionsOpen ? "" : " dsh-hidden") });
-      this.sessionsListEl = this.sessionsPanel.createDiv({ cls: "dsh-sessions-list" });
     }
 
     /* 消息区 */
@@ -694,7 +530,6 @@ class DSHChatView extends ItemView {
     this.inputEl.addEventListener("input", () => { this.autoGrowInput(); this.updateSendIcon(); this.openMentionPopup(); });
 
     this.syncSelectionRow();
-    this.renderSessionPanel();
     this.renderMessages();
     this.updateHeader();
     this.updateAutoMentionChip();
@@ -713,8 +548,8 @@ class DSHChatView extends ItemView {
       return;
     }
     this.autoMentionEl.removeClass("dsh-hidden");
-    const seg = s.autoAttachSelection ? " + 选区" : "";
-    this.autoMentionBadge.setText("正在自动附加：当前笔记" + seg);
+    const seg = s.autoAttachSelection ? "（含选区）" : "";
+    this.autoMentionBadge.setText("自动附加：@" + file.basename + seg);
     this.autoMentionBadge.classList.toggle("agent-client-disabled", false);
   }
 
@@ -730,8 +565,7 @@ class DSHChatView extends ItemView {
   showHeaderMenu(ev) {
     const menu = new Menu();
     menu.addItem((it) => it.setTitle("新建会话").setIcon("plus").onClick(() => this.newSession()));
-    menu.addItem((it) => it.setTitle("浮动聊天窗").setIcon("panel-top").onClick(() => this.plugin.toggleFloatingChat()));
-    menu.addItem((it) => it.setTitle(this.sessionsOpen ? "收起会话列表" : "展开会话列表").setIcon("list").onClick(() => { this.sessionsOpen = !this.sessionsOpen; this.renderSessionPanel(); }));
+    menu.addItem((it) => it.setTitle("打开会话管理器").setIcon("history").onClick(() => this.plugin.activateSessionManager()));
     menu.addItem((it) => it.setTitle("清空当前会话").setIcon("trash").onClick(() => { if (this.session) { this.session.messages = []; this.plugin.saveSession(this.session); this.renderMessages(); } }));
     menu.addItem((it) => it.setTitle("打开设置").setIcon("settings").onClick(() => { try { this.app.setting.open(); this.app.setting.openTabById("dsh"); } catch (e) { /* ignore */ } }));
     menu.addSeparator();
@@ -969,49 +803,7 @@ class DSHChatView extends ItemView {
     };
   }
 
-  /* ---------- 会话面板 ---------- */
-
-  renderSessionPanel() {
-    if (!this.sessionsPanel) return;
-    this.sessionsPanel.toggleClass("dsh-hidden", !this.sessionsOpen);
-    if (!this.sessionsOpen) return;
-    this.renderSessionList();
-  }
-
-  async renderSessionList() {
-    if (!this.sessionsListEl) return;
-    this.sessionsListEl.empty();
-    const sessions = await this.plugin.listSessions();
-    // 用缓存覆盖磁盘（运行中的会话可能比磁盘新），并补上缓存里有但磁盘还没有的新会话
-    const merged = sessions.map((s) => this.sessionCache.get(s.id) || s);
-    for (const [id, s] of this.sessionCache) {
-      if (!merged.some((m) => m.id === id)) merged.push(s);
-    }
-    merged.sort((a, b) => (b.lastActivityAt || 0) - (a.lastActivityAt || 0));
-    if (merged.length === 0) {
-      this.sessionsListEl.createDiv({ cls: "dsh-sessions-empty", text: "暂无会话" });
-      return;
-    }
-    for (const s of merged.slice(0, 100)) {
-      const running = !!(this.getRun(s.id).running);
-      const item = this.sessionsListEl.createDiv({ cls: "dsh-session-item" + (this.session && this.session.id === s.id ? " is-active" : "") });
-      const main = item.createDiv({ cls: "dsh-session-main" });
-      main.createDiv({ cls: "dsh-session-title", text: (running ? "⏳ " : "") + (s.title || "未命名") });
-      main.createDiv({ cls: "dsh-session-time", text: fmtTime(s.lastActivityAt) });
-      item.addEventListener("click", (e) => {
-        if (e.target.closest(".dsh-session-del")) return;
-        this.loadSession(s);
-      });
-      const del = item.createEl("button", { cls: "dsh-icon-btn dsh-session-del", attr: { "aria-label": "删除", title: "删除会话" } });
-      setIcon(del, "trash");
-      del.addEventListener("click", async (e) => {
-        e.stopPropagation();
-        await this.plugin.deleteSession(s.id);
-        if (this.session && this.session.id === s.id) this.newSession();
-        this.renderSessionList();
-      });
-    }
-  }
+  /* ---------- 会话 ---------- */
 
   async loadSession(s) {
     const sess = (s && this.sessionCache.get(s.id)) || s;
@@ -1033,6 +825,13 @@ class DSHChatView extends ItemView {
     if (m.role === "user") {
       const txt = wrap.createDiv({ cls: "agent-client-text-with-mentions" });
       this.renderMentionsText(txt, m.content || "");
+      // 自动附带的当前笔记/选区：显示为可点击的 @[[笔记]] 提及
+      if (m.notePath) {
+        const name = String(m.notePath).split("/").pop().replace(/\.md$/i, "");
+        const chip = txt.createSpan({ cls: "agent-client-text-mention", text: "@" + name });
+        chip.setAttribute("title", m.notePath + (m.selection ? "（含选区）" : ""));
+        chip.addEventListener("click", () => this.openInternalLink(m.notePath));
+      }
     } else if (m.role === "error") {
       const pre = wrap.createEl("pre", { cls: "dsh-error-pre" });
       pre.setText(m.content || "未知错误");
@@ -1491,9 +1290,6 @@ class DSHChatView extends ItemView {
       if (this.session && this.session.id === session.id) {
         this.renderMessages();
         this.updateHeader();
-        if (this.sessionsOpen) this.renderSessionList();
-      } else {
-        this.renderSessionList(); // 后台会话完成：更新列表
       }
     } finally {
       run.running = false;
@@ -1937,23 +1733,6 @@ class DSHSettingsTab extends PluginSettingTab {
       .addToggle((t) => t.setValue(this.plugin.settings.enterToSend).onChange(async (v) => {
         this.plugin.settings.enterToSend = v;
         await this.plugin.saveSettings();
-      }));
-
-    new Setting(containerEl)
-      .setName("默认显示会话列表")
-      .setDesc("打开聊天面板时展开会话列表（也可用头部按钮随时切换）。")
-      .addToggle((t) => t.setValue(this.plugin.settings.showSessionList).onChange(async (v) => {
-        this.plugin.settings.showSessionList = v;
-        await this.plugin.saveSettings();
-      }));
-
-    new Setting(containerEl)
-      .setName("浮动聊天按钮")
-      .setDesc("右下角显示可拖拽的圆形按钮，单击打开/关闭浮动聊天窗（位置会记忆）。")
-      .addToggle((t) => t.setValue(this.plugin.settings.showFloatingButton !== false).onChange(async (v) => {
-        this.plugin.settings.showFloatingButton = v;
-        await this.plugin.saveSettings();
-        this.plugin.refreshFloatingButton();
       }));
 
     new Setting(containerEl)
