@@ -1082,7 +1082,7 @@ class DSHChatView extends ItemView {
     }
     const on = this.session ? this.session.autoAttach !== false : this.autoAttachOverride !== false;
     this.autoMentionEl.removeClass("dsh-hidden");
-    this.autoMentionBadge.setText("自动附加：@" + file.basename);
+    this.autoMentionBadge.setText("@" + file.basename);
     this.autoMentionBadge.classList.toggle("agent-client-disabled", !on);
     this.autoMentionEl.setAttribute("title", on ? "发送时自动附带当前笔记；点击关闭" : "自动附带已关闭；点击恢复");
   }
