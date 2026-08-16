@@ -909,7 +909,7 @@ class DSHChatView extends ItemView {
 
     /* 输入区：选择器（模型/强度/权限）与发送同一排 */
     const inputWrap = root.createDiv({ cls: "dsh-input-wrap" });
-    this.inputEl = inputWrap.createEl("textarea", { cls: "dsh-input", attr: { placeholder: "给 DSH 下达任务…（Enter 发送/排队，Ctrl+Enter 插话，Shift+Enter 换行）", rows: "3" } });
+    this.inputEl = inputWrap.createEl("textarea", { cls: "dsh-input", attr: { placeholder: "给 DSH 下达任务…（Enter 发送；运行中 Enter 排队）", rows: "3" } });
     // 排队提示条
     this.queueEl = inputWrap.createDiv({ cls: "dsh-queue dsh-hidden" });
     const toolbar = inputWrap.createDiv({ cls: "dsh-input-toolbar" });
@@ -1251,16 +1251,61 @@ class DSHChatView extends ItemView {
     new Notice("正在停止…");
   }
 
+  /** 排队栏：每条排队项带「重新编辑 / 取消排队 / 插话发送」按钮 */
   renderQueue() {
     if (!this.queueEl) return;
+    this.queueEl.empty();
     if (this.queue.length === 0) {
       this.queueEl.addClass("dsh-hidden");
-      this.queueEl.setText("");
       return;
     }
     this.queueEl.removeClass("dsh-hidden");
-    const first = truncate(this.queue[0], 40);
-    this.queueEl.setText("⏳ 排队中 " + this.queue.length + " 条" + (first ? "：接下来「" + first + "」" : "") + "（完成后自动运行）");
+    this.queueEl.createDiv({ cls: "dsh-queue-header", text: "排队中 " + this.queue.length + " 条（完成后自动运行）" });
+    this.queue.forEach((q, idx) => {
+      const item = this.queueEl.createDiv({ cls: "dsh-queue-item" });
+      const text = item.createDiv({ cls: "dsh-queue-text", text: q });
+      text.setAttribute("title", q);
+      const actions = item.createDiv({ cls: "dsh-queue-actions" });
+
+      const editBtn = actions.createEl("button", { cls: "dsh-icon-btn", attr: { "aria-label": "重新编辑", title: "重新编辑" } });
+      setIcon(editBtn, "pencil");
+      editBtn.addEventListener("click", () => this.queueEdit(idx));
+
+      const cancelBtn = actions.createEl("button", { cls: "dsh-icon-btn", attr: { "aria-label": "取消排队", title: "取消排队" } });
+      setIcon(cancelBtn, "x");
+      cancelBtn.addEventListener("click", () => this.queueRemove(idx));
+
+      const zapBtn = actions.createEl("button", { cls: "dsh-icon-btn dsh-queue-zap", attr: { "aria-label": "插话发送", title: "插话发送" } });
+      setIcon(zapBtn, "zap");
+      zapBtn.addEventListener("click", () => this.queueInterject(idx));
+    });
+  }
+
+  queueEdit(idx) {
+    const q = this.queue.splice(idx, 1)[0];
+    if (q == null) return;
+    this.inputEl.value = q;
+    this.renderQueue();
+    this.inputEl.focus();
+  }
+
+  queueRemove(idx) {
+    this.queue.splice(idx, 1);
+    this.renderQueue();
+  }
+
+  /** 把某条排队项立刻插话发送：中断当前，立即处理它 */
+  queueInterject(idx) {
+    const q = this.queue.splice(idx, 1)[0];
+    if (q == null) return;
+    if (this.running) {
+      this.cancel(); // 中断当前并清空其余排队
+      this.interjectQuery = q;
+      new Notice("已插话发送…");
+    } else {
+      this.interjectQuery = q;
+      this.runNext();
+    }
   }
 
   async runOne(query) {

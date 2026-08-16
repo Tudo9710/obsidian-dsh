@@ -69,13 +69,51 @@
 }
 
 .dsh-queue {
-  font-size: var(--font-ui-smaller);
-  color: var(--text-warning, #e6a23c);
-  background: var(--background-secondary);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 6px;
-  padding: 4px 8px;
-  word-break: break-all;
+  background: var(--background-secondary);
+  padding: 6px 8px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.dsh-queue-header {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-warning, #e6a23c);
+  font-weight: 600;
+}
+
+.dsh-queue-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+  padding-top: 4px;
+}
+
+.dsh-queue-text {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.dsh-queue-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+}
+
+.dsh-queue-zap {
+  color: var(--text-warning, #e6a23c);
 }
 
 .dsh-input-toolbar {
