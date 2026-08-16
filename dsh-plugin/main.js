@@ -874,6 +874,7 @@ class DSHChatView extends ItemView {
     this.live = null;
     this._pendingThinking = null;
     this.queue = [];
+    this.interjectQuery = null;
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -908,7 +909,7 @@ class DSHChatView extends ItemView {
 
     /* 输入区：选择器（模型/强度/权限）与发送同一排 */
     const inputWrap = root.createDiv({ cls: "dsh-input-wrap" });
-    this.inputEl = inputWrap.createEl("textarea", { cls: "dsh-input", attr: { placeholder: "给 DSH 下达任务…（Enter 发送/排队，Shift+Enter 换行）", rows: "3" } });
+    this.inputEl = inputWrap.createEl("textarea", { cls: "dsh-input", attr: { placeholder: "给 DSH 下达任务…（Enter 发送/排队，Ctrl+Enter 插话，Shift+Enter 换行）", rows: "3" } });
     // 排队提示条
     this.queueEl = inputWrap.createDiv({ cls: "dsh-queue dsh-hidden" });
     const toolbar = inputWrap.createDiv({ cls: "dsh-input-toolbar" });
@@ -920,9 +921,14 @@ class DSHChatView extends ItemView {
     this.sendBtn.addEventListener("click", () => this.onSendButton());
     this.inputEl.addEventListener("keydown", (e) => {
       if (e.isComposing) return; // 中文输入法组词中的 Enter 不触发发送
-      if (e.key === "Enter" && !e.shiftKey && this.plugin.settings.enterToSend) {
-        e.preventDefault();
-        this.onSend();
+      if (e.key === "Enter") {
+        if (e.ctrlKey || e.metaKey) {
+          e.preventDefault();
+          this.onInterject();
+        } else if (!e.shiftKey && this.plugin.settings.enterToSend) {
+          e.preventDefault();
+          this.onSend();
+        }
       }
     });
 
@@ -1202,11 +1208,45 @@ class DSHChatView extends ItemView {
     await this.runOne(query);
   }
 
+  /** 插话：中断当前任务，立即带着上下文处理新消息（优先于排队） */
+  onInterject() {
+    if (this.disposed) return;
+    const query = this.inputEl.value.trim();
+    if (!query) return;
+    this.inputEl.value = "";
+    if (this.running) {
+      this.cancel(); // 中断当前并清空排队
+      this.interjectQuery = query;
+      new Notice("已插话，正在中断当前任务…");
+    } else {
+      this.interjectQuery = query;
+      this.runNext();
+    }
+  }
+
+  /** 处理下一个任务：插话 > 排队 > 无 */
+  async runNext() {
+    if (this.disposed) return;
+    if (this.interjectQuery != null) {
+      const q = this.interjectQuery;
+      this.interjectQuery = null;
+      this.renderQueue();
+      await this.runOne(q);
+    } else if (this.queue.length > 0) {
+      const q = this.queue.shift();
+      this.renderQueue();
+      await this.runOne(q);
+    } else {
+      this.renderQueue();
+    }
+  }
+
   cancel() {
     if (!this.running || !this.cancelToken) return;
     this.cancelToken.cancelled = true;
     if (this.cancelToken.cancel) this.cancelToken.cancel();
     this.queue.length = 0; // 清空排队
+    this.interjectQuery = null;
     this.renderQueue();
     new Notice("正在停止…");
   }
@@ -1310,14 +1350,8 @@ class DSHChatView extends ItemView {
       this.running = false;
       this.updateRunningUI(false);
     }
-    // 排空队列：依次处理下一条
-    if (!this.disposed && this.queue.length > 0) {
-      const next = this.queue.shift();
-      this.renderQueue();
-      await this.runOne(next);
-    } else {
-      this.renderQueue();
-    }
+    // 处理下一个：插话优先，其次排队
+    await this.runNext();
   }
 
   updateRunningUI(running) {
