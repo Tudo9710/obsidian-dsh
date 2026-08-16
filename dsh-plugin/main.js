@@ -1028,9 +1028,9 @@ class DSHChatView extends ItemView {
     this.autoMentionIcon = this.autoMentionEl.createSpan({ cls: "agent-client-auto-mention-toggle-icon" });
     setIcon(this.autoMentionIcon, "link");
     this.autoMentionEl.addEventListener("click", () => {
-      if (!this.session) return;
-      const cur = this.session.autoAttach !== false;
-      this.session.autoAttach = !cur;
+      const cur = this.session ? this.session.autoAttach !== false : this.autoAttachOverride !== false;
+      if (this.session) this.session.autoAttach = !cur;
+      else this.autoAttachOverride = !cur;
       this.updateAutoMentionChip();
     });
     this.inputEl = inputBox.createEl("textarea", { cls: "agent-client-chat-input-textarea", attr: { placeholder: "给 DSH 下达任务…（Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 插话 · @ 提及笔记）", rows: "3" } });
@@ -1072,20 +1072,21 @@ class DSHChatView extends ItemView {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.updateAutoMentionChip()));
   }
 
-  /** 自动附带提示 chip：显示当前笔记名 + 可点击切换 */
+  /** 自动附带提示 chip：显示当前笔记名；点击切换，关闭后划线显示、可再点击恢复 */
   updateAutoMentionChip() {
     if (!this.autoMentionEl || !this.autoMentionBadge) return;
-    const on = this.session ? this.session.autoAttach !== false : true;
     const file = this.app.workspace.getActiveFile();
     const s = this.plugin.settings;
-    if (!on || !file || !s.autoAttachNote) {
+    if (!file || !s.autoAttachNote) {
       this.autoMentionEl.addClass("dsh-hidden");
       return;
     }
+    const on = this.session ? this.session.autoAttach !== false : this.autoAttachOverride !== false;
     this.autoMentionEl.removeClass("dsh-hidden");
     const seg = s.autoAttachSelection ? "（含选区）" : "";
     this.autoMentionBadge.setText("自动附加：@" + file.basename + seg);
-    this.autoMentionBadge.classList.toggle("agent-client-disabled", false);
+    this.autoMentionBadge.classList.toggle("agent-client-disabled", !on);
+    this.autoMentionEl.setAttribute("title", on ? "发送时自动附带当前笔记与选区；点击关闭" : "自动附带已关闭；点击恢复");
   }
 
   /** 头部导航按钮（与 Obsidian 侧栏按钮一致的 icon 按钮） */
@@ -1357,6 +1358,10 @@ class DSHChatView extends ItemView {
   renderMessageEl(m) {
     const isUser = m.role === "user";
     const wrap = this.messagesEl.createDiv({ cls: "agent-client-message-renderer agent-client-message-" + (isUser ? "user" : "assistant") });
+    // 消息头（恢复 1.1 的「DSH/我 + 时间」样式）
+    const head = wrap.createDiv({ cls: "dsh-msg-head" });
+    head.createSpan({ cls: "dsh-msg-role", text: isUser ? "我" : m.role === "error" ? "错误" : "DSH" });
+    head.createSpan({ cls: "dsh-msg-time", text: fmtTime(m.ts) });
     if (m.role === "user") {
       const txt = wrap.createDiv({ cls: "agent-client-text-with-mentions" });
       this.renderMentionsText(txt, m.content || "");
@@ -1483,7 +1488,7 @@ class DSHChatView extends ItemView {
     const hasTools = tools.length > 0;
     const panel = this.messagesEl.createDiv({ cls: "agent-client-collapsible-thought" });
     const head = panel.createDiv({ cls: "agent-client-collapsible-thought-header" });
-    head.createSpan({ text: "思考过程 · " + (thinking ? thinking.seconds : 0) + "s" + (tools.length ? " · " + tools.length + " 步工具" : "") });
+    head.createSpan({ text: "🧠 思考过程 · " + (thinking ? thinking.seconds : 0) + "s" + (tools.length ? " · " + tools.length + " 步工具" : "") });
     const icon = head.createSpan({ cls: "agent-client-collapsible-thought-icon" });
     setIcon(icon, "chevron-down");
     const body = panel.createDiv({ cls: "agent-client-collapsible-thought-content dsh-hidden" });
@@ -1537,7 +1542,7 @@ class DSHChatView extends ItemView {
   async getContextBlocks(query) {
     const out = { blocks: "", notePath: null, selectionText: null };
     const s = this.plugin.settings;
-    const attach = this.session ? this.session.autoAttach !== false : true; // 会话级开关
+    const attach = this.session ? this.session.autoAttach !== false : this.autoAttachOverride !== false; // 会话级开关
     const file = this.app.workspace.getActiveFile();
     let notePath = null;
     let selection = null;
@@ -1886,7 +1891,7 @@ class DSHChatView extends ItemView {
     const wrap = this.messagesEl.createDiv({ cls: "agent-client-collapsible-thought" });
     const head = wrap.createDiv({ cls: "agent-client-collapsible-thought-header", attr: { title: "点击展开/收起" } });
     const sec = Math.round((Date.now() - run.statusStart) / 1000);
-    this.thinkingTimeEl = head.createSpan({ text: "思考过程 · " + sec + "s（点击展开）" });
+    this.thinkingTimeEl = head.createSpan({ text: "🧠 思考过程 · " + sec + "s（点击展开）" });
     const icon = head.createSpan({ cls: "agent-client-collapsible-thought-icon" });
     setIcon(icon, "chevron-down");
     const body = wrap.createDiv({ cls: "agent-client-collapsible-thought-content dsh-hidden" });
@@ -1904,13 +1909,16 @@ class DSHChatView extends ItemView {
     });
     // 实时回复文本（思考面板下方，流式追加）
     const textWrap = this.messagesEl.createDiv({ cls: "agent-client-message-renderer agent-client-message-assistant" });
+    const textHead = textWrap.createDiv({ cls: "dsh-msg-head" });
+    textHead.createSpan({ cls: "dsh-msg-role", text: "DSH" });
+    textHead.createSpan({ cls: "dsh-msg-time", text: fmtTime(Date.now()) });
     this.liveTextEl = textWrap.createDiv({ cls: "agent-client-markdown-text-renderer", text: (run.live && run.live.text) || "" });
     if (run.statusTimer) clearInterval(run.statusTimer);
     run.statusTimer = setInterval(() => {
       if (this.disposed || !run.running || !run.live) return;
       if (this.session && this.session.id === run.sessionId && this.thinkingTimeEl) {
         const s2 = Math.round((Date.now() - run.statusStart) / 1000);
-        this.thinkingTimeEl.setText("思考过程 · " + s2 + "s（点击展开）");
+        this.thinkingTimeEl.setText("🧠 思考过程 · " + s2 + "s（点击展开）");
       }
     }, 1000);
   }
@@ -1989,7 +1997,7 @@ class DSHChatView extends ItemView {
     try {
       if (this.session && this.session.id === run.sessionId) {
         if (this.liveBody) this.liveBody.addClass("dsh-hidden");
-        if (this.thinkingTimeEl) this.thinkingTimeEl.setText("思考过程 · " + sec + "s · " + run.live.tools.length + " 步工具（点击展开）");
+        if (this.thinkingTimeEl) this.thinkingTimeEl.setText("🧠 思考过程 · " + sec + "s · " + run.live.tools.length + " 步工具（点击展开）");
       }
     } catch (e) { /* ignore */ }
     run.live = null;

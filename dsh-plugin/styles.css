@@ -2344,3 +2344,55 @@ If your plugin does not need CSS, delete this file.
 	border-radius: 4px;
 	user-select: text;
 }
+
+/* ---- 消息头：恢复 1.1 的「DSH/我 + 时间」样式 ---- */
+.dsh-msg-head {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-bottom: 4px;
+	user-select: none;
+}
+.dsh-msg-role {
+	font-size: var(--font-ui-smaller);
+	font-weight: var(--font-semibold);
+	color: var(--text-muted);
+}
+.dsh-msg-time {
+	font-size: var(--font-smallest);
+	color: var(--text-faint);
+}
+
+/* ---- 思考面板：恢复 1.1 的卡片样式（非斜体，带底色边框） ---- */
+.agent-client-collapsible-thought {
+	background-color: var(--background-secondary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+	padding: 8px 12px;
+	margin-top: 8px;
+	margin-bottom: 12px;
+	font-style: normal;
+	color: var(--text-normal);
+}
+.agent-client-collapsible-thought-header {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	color: var(--text-muted);
+	font-weight: var(--font-semibold);
+	font-style: normal;
+}
+.agent-client-collapsible-thought-content {
+	margin-top: 8px;
+	padding-left: 4px;
+	color: var(--text-normal);
+	font-size: 0.92em;
+	line-height: 1.5;
+}
+
+/* ---- 工具调用块：更紧凑 ---- */
+.agent-client-message-tool-call {
+	padding: 4px 8px;
+	margin-bottom: 6px;
+	font-size: 0.82em;
+}
