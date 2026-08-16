@@ -28,6 +28,7 @@ function makeEl() {
     cls: new Set(),
     listeners: {},
     parentElement: null,
+    style: {},
     empty() { this.children = []; },
     addClass(c) { this.cls.add(c); },
     removeClass(c) { this.cls.delete(c); },
@@ -36,6 +37,16 @@ function makeEl() {
     setText(t) { this.text = t; },
     setAttribute() {},
     addEventListener(type, fn) { this.listeners[type] = fn; },
+    querySelector(sel) {
+      const cls = String(sel || "").replace(/^\./, "");
+      const stack = [...(this.children || [])];
+      while (stack.length) {
+        const n = stack.shift();
+        if (cls && n.cls && n.cls.has(cls)) return n;
+        if (n.children) stack.push(...n.children);
+      }
+      return null;
+    },
     createDiv(opts) { const c = makeEl(); c.opts = opts; if (opts && opts.cls) String(opts.cls).split(" ").forEach((k) => k && c.cls.add(k)); this.children.push(c); c.parentElement = this; return c; },
     createSpan(opts) { return this.createDiv(opts); },
     createEl(tag, opts) { const c = this.createDiv(opts); c.tag = tag; return c; },
@@ -51,6 +62,7 @@ function makeEl() {
         contains(c) { return elRef.cls.has(c); },
         add(c) { elRef.cls.add(c); },
         remove(c) { elRef.cls.delete(c); },
+        toggle(c) { elRef.cls.has(c) ? elRef.cls.delete(c) : elRef.cls.add(c); return elRef.cls.has(c); },
       };
     },
     set innerHTML(v) { this._html = v; },
@@ -70,6 +82,7 @@ class MockItemView {
     this.app = leaf && leaf.app;
   }
   registerDomEvent() {}
+  registerEvent() {}
   onClose() {}
 }
 
@@ -80,6 +93,7 @@ class MockPlugin {
   async saveSettings() {}
   logError() {}
   registerView(type, factory) { this._viewFactory = factory; }
+  registerMarkdownCodeBlockProcessor() {}
   addRibbonIcon() {}
   addCommand() {}
   addSettingTab(tab) { this._settingsTab = tab; }
@@ -97,6 +111,19 @@ const obsidianStub = {
   Notice: class { constructor(msg) { console.log("[Notice]", msg); } },
   Setting: MockSetting,
   setIcon() {},
+  Menu: class {
+    constructor() {}
+    addItem(fn) { fn({ setTitle() { return this; }, setIcon() { return this; }, setChecked() { return this; }, setIsLabel() { return this; }, onClick(f) { return this; } }); return this; }
+    addSeparator() { return this; }
+    showAtMouseEvent() {}
+  },
+  Modal: class {
+    constructor(app) { this.app = app; this.contentEl = makeEl(); }
+    open() {}
+    close() {}
+    onOpen() {}
+    onClose() {}
+  },
 };
 
 // 拦截 require("obsidian")
@@ -112,6 +139,7 @@ global.__obsidianStub = obsidianStub;
 
 const mockApp = () => ({
   workspace: {
+    on: () => ({ unsubscribe: () => {} }),
     getLeavesOfType: () => [],
     getRightLeaf: () => null,
     getLeaf: () => ({ setViewState: async () => {} }),
@@ -207,7 +235,7 @@ const mockApp = () => ({
       ],
     };
     view.renderMessages();
-    const panel = view.messagesEl.children.find((c) => c.opts && String(c.opts.cls || "").includes("dsh-thinking-summary"));
+    const panel = view.messagesEl.children.find((c) => c.opts && String(c.opts.cls || "").includes("agent-client-collapsible-thought"));
     if (!panel) { console.error("❌ 未找到思考面板"); process.exit(1); }
     const head = panel.children[0];
     const body = panel.children[1];
@@ -253,7 +281,7 @@ const mockApp = () => ({
     // 再 renderMessages 两次，模拟重建/重载——面板必须每次都出现
     for (let pass = 1; pass <= 2; pass++) {
       view.renderMessages();
-      const panels = view.messagesEl.children.filter((c) => c.opts && String(c.opts.cls || "").includes("dsh-thinking-summary"));
+      const panels = view.messagesEl.children.filter((c) => c.opts && String(c.opts.cls || "").includes("agent-client-collapsible-thought"));
       if (panels.length !== 1) { console.error(`❌ 第 ${pass} 次渲染面板数=${panels.length}（应为 1，面板消失复现）`); process.exit(1); }
       const pHead = panels[0].children[0];
       const pBody = panels[0].children[1];

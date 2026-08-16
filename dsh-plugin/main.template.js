@@ -12,7 +12,7 @@
  */
 "use strict";
 
-const { Plugin, PluginSettingTab, ItemView, MarkdownView, MarkdownRenderer, Notice, Setting, setIcon, TFolder, TFile } = require("obsidian");
+const { Plugin, PluginSettingTab, ItemView, MarkdownView, MarkdownRenderer, Notice, Setting, setIcon, TFolder, TFile, Menu, Modal } = require("obsidian");
 const path = require("path");
 /*__INLINE_PROVIDER__*/
 
@@ -97,12 +97,113 @@ class DSHPlugin extends Plugin {
         else this.activateView();
       },
     });
+    this.addCommand({
+      id: "toggle-dsh-floating-chat",
+      name: "切换 DSH 浮动聊天窗",
+      callback: () => this.toggleFloatingChat(),
+    });
+
+    /* 代码块内嵌聊天：```agent-client ``` 在笔记里直接对话（参考 agent-client 的嵌入块） */
+    this.registerMarkdownCodeBlockProcessor("agent-client", (source, el, ctx) => {
+      try {
+        const host = el.createDiv({ cls: "agent-client-code-block-host" });
+        const chat = host.createDiv({ cls: "agent-client-code-block-chat" });
+        const header = chat.createDiv({ cls: "agent-client-embedded-header" });
+        const inline = header.createDiv({ cls: "agent-client-inline-header" });
+        const main = inline.createDiv({ cls: "agent-client-inline-header-main" });
+        main.createSpan({ cls: "agent-client-agent-label", text: "DSH" });
+        const messagesContainer = chat.createDiv({ cls: "agent-client-embedded-messages-container" });
+        const panel = messagesContainer.createDiv({ cls: "agent-client-embedded-chat-panel" });
+        const fakeLeaf = { app: this.app };
+        const view = new DSHChatView(fakeLeaf, this);
+        view.floating = true;
+        view.mountTo(panel).catch((e) => this.logError("embedded-mount", e));
+        ctx.addChild({ onunload: () => { try { view.onClose(); view.disposed = true; } catch (e) { /* ignore */ } } });
+      } catch (e) {
+        this.logError("code-block", e);
+        el.createDiv({ cls: "agent-client-code-block-error", text: "DSH 内嵌聊天初始化失败：" + String((e && e.message) || e) });
+      }
+    });
 
     this.addSettingTab(new DSHSettingsTab(this.app, this));
   }
 
   onunload() {
+    this.closeFloatingChat();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
+  }
+
+  /* ---------- 浮动聊天窗（参考 agent-client 的 FloatingChatView + FloatingButton） ---------- */
+
+  toggleFloatingChat() {
+    if (this._floating && this._floating.win && this._floating.win.isConnected) {
+      this.closeFloatingChat();
+    } else {
+      this.openFloatingChat();
+    }
+  }
+
+  openFloatingChat() {
+    if (this._floating && this._floating.win && this._floating.win.isConnected) return;
+    const win = document.body.createDiv({ cls: "agent-client-floating-window" });
+    win.style.left = Math.max(16, window.innerWidth - 420) + "px";
+    win.style.top = "80px";
+    win.style.width = "370px";
+    win.style.height = "580px";
+
+    // inline 头部（可拖拽移动窗口）
+    const header = win.createDiv({ cls: "agent-client-floating-header" });
+    const inline = header.createDiv({ cls: "agent-client-inline-header" });
+    const main = inline.createDiv({ cls: "agent-client-inline-header-main" });
+    main.createSpan({ cls: "agent-client-agent-label", text: "DSH" });
+    const actions = inline.createDiv({ cls: "agent-client-inline-header-actions" });
+    const closeBtn = actions.createEl("button", { cls: "clickable-icon", attr: { "aria-label": "关闭", title: "关闭" } });
+    setIcon(closeBtn, "x");
+    closeBtn.addEventListener("click", () => this.closeFloatingChat());
+
+    const content = win.createDiv({ cls: "agent-client-floating-content" });
+
+    // 同一视图类挂载进浮动窗（共享会话存储，独立运行状态）
+    const fakeLeaf = { app: this.app };
+    const view = new DSHChatView(fakeLeaf, this);
+    view.floating = true;
+    view.mountTo(content).catch((e) => this.logError("floating-mount", e));
+
+    // 拖拽
+    let dragging = false, dx = 0, dy = 0;
+    const onMove = (e) => {
+      if (!dragging) return;
+      win.style.left = (e.clientX - dx) + "px";
+      win.style.top = (e.clientY - dy) + "px";
+    };
+    const onUp = () => { dragging = false; };
+    header.addEventListener("mousedown", (e) => {
+      dragging = true;
+      dx = e.clientX - win.offsetLeft;
+      dy = e.clientY - win.offsetTop;
+      e.preventDefault();
+    });
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+
+    this._floating = { win, view, onMove, onUp, closeBtn };
+    document.body.appendChild(win);
+  }
+
+  closeFloatingChat() {
+    const f = this._floating;
+    if (!f) return;
+    try {
+      if (f.view) { f.view.onClose(); f.view.disposed = true; }
+    } catch (e) { /* ignore */ }
+    try {
+      if (f.win && f.win.parentNode) f.win.parentNode.removeChild(f.win);
+    } catch (e) { /* ignore */ }
+    try {
+      document.removeEventListener("mousemove", f.onMove);
+      document.removeEventListener("mouseup", f.onUp);
+    } catch (e) { /* ignore */ }
+    this._floating = null;
   }
 
   /* ---------- 错误日志（排查卡死/异常用，写到插件目录 error.log） ---------- */
@@ -331,9 +432,16 @@ class DSHChatView extends ItemView {
     this.plugin = plugin;
     this.session = null;
     this.disposed = false;
+    this.floating = false; // 浮动窗模式：无侧栏头部/会话面板
     this.sessionsOpen = !!plugin.settings.showSessionList;
     this.sessionCache = new Map(); // id -> session（保证多会话/切换时对象一致）
     this.runs = new Map();         // id -> runState（每个会话独立的运行状态）
+  }
+
+  /** 挂载到任意容器（浮动窗复用同一视图类） */
+  async mountTo(containerEl) {
+    this.contentEl = containerEl;
+    return this.onOpen();
   }
 
   /* ---------- 多会话运行状态 ---------- */
@@ -373,6 +481,7 @@ class DSHChatView extends ItemView {
     this.updateRunningUI(!!(this.activeRun && this.activeRun.running));
     this.renderQueue();
     this.renderSessionList();
+    this.updateAutoMentionChip();
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
@@ -385,24 +494,26 @@ class DSHChatView extends ItemView {
     root.empty();
     root.addClass("dsh-view");
 
-    /* 头部 */
-    this.headerEl = root.createDiv({ cls: "dsh-header" });
-    this.titleEl = this.headerEl.createDiv({ cls: "dsh-header-title", text: "DSH" });
-    const actions = this.headerEl.createDiv({ cls: "dsh-header-actions" });
-    this.sessionsToggleBtn = actions.createEl("button", { cls: "dsh-icon-btn", attr: { "aria-label": "会话列表", title: "会话列表" } });
-    setIcon(this.sessionsToggleBtn, "list");
-    this.sessionsToggleBtn.addEventListener("click", () => { this.sessionsOpen = !this.sessionsOpen; this.renderSessionPanel(); });
-    this.newBtn = actions.createEl("button", { cls: "dsh-icon-btn", attr: { "aria-label": "新会话", title: "新会话" } });
-    setIcon(this.newBtn, "plus");
-    this.newBtn.addEventListener("click", () => this.newSession());
+    const container = root.createDiv({ cls: "agent-client-chat-view-container" });
 
-    /* 会话列表（可折叠） */
-    this.sessionsPanel = root.createDiv({ cls: "dsh-sessions-panel dsh-hidden" });
-    this.sessionsListEl = this.sessionsPanel.createDiv({ cls: "dsh-sessions-list" });
+    /* 头部（仅侧栏模式；浮动窗自带 inline header） */
+    if (!this.floating) {
+      const header = container.createDiv({ cls: "nav-header agent-client-chat-view-header" });
+      const navBtns = header.createDiv({ cls: "nav-buttons-container" });
+      this.titleEl = navBtns.createSpan({ cls: "agent-client-chat-view-header-title", text: "DSH" });
+      this.newBtn = this.navActionBtn(navBtns, "plus", "新会话", () => this.newSession());
+      this.historyBtn = this.navActionBtn(navBtns, "history", "会话历史", () => this.openHistoryModal());
+      this.exportBtn = this.navActionBtn(navBtns, "save", "导出为 Markdown", () => this.exportChat());
+      this.moreBtn = this.navActionBtn(navBtns, "more-vertical", "更多", (e) => this.showHeaderMenu(e));
+
+      /* 会话列表（可折叠） */
+      this.sessionsPanel = container.createDiv({ cls: "dsh-sessions-panel" + (this.sessionsOpen ? "" : " dsh-hidden") });
+      this.sessionsListEl = this.sessionsPanel.createDiv({ cls: "dsh-sessions-list" });
+    }
 
     /* 消息区 */
-    this.messagesEl = root.createDiv({ cls: "dsh-messages" });
-    // 内部链接（[[wikilink]] → a[data-href]）点击导航：自定义视图里手动接管跳转
+    this.messagesEl = container.createDiv({ cls: "agent-client-chat-view-messages" });
+    // 内部链接（[[wikilink]] → a[data-href]）点击导航
     this.registerDomEvent(this.messagesEl, "click", (e) => {
       const a = e.target && e.target.closest ? e.target.closest("a.internal-link, a[data-href]") : null;
       if (!a) return;
@@ -414,22 +525,44 @@ class DSHChatView extends ItemView {
     });
 
     /* 状态条 */
-    this.statusEl = root.createDiv({ cls: "dsh-status dsh-hidden" });
+    this.statusEl = container.createDiv({ cls: "dsh-status dsh-hidden" });
 
-    /* 输入区：选择器（模型/强度/权限）与发送同一排 */
-    const inputWrap = root.createDiv({ cls: "dsh-input-wrap" });
-    this.inputEl = inputWrap.createEl("textarea", { cls: "dsh-input", attr: { placeholder: "给 DSH 下达任务…（Enter 发送；运行中 Enter 排队）", rows: "3" } });
-    // 排队提示条
-    this.queueEl = inputWrap.createDiv({ cls: "dsh-queue dsh-hidden" });
-    const toolbar = inputWrap.createDiv({ cls: "dsh-input-toolbar" });
-    const selects = toolbar.createDiv({ cls: "dsh-toolbar-selects" });
-    this.modelSel = this.makeSelect(selects, this.modelOptions(), this.currentModel(), "模型");
-    this.effortSel = this.makeSelect(selects, EFFORT_OPTS, this.currentEffort(), "强度");
-    this.permSel = this.makeSelect(selects, PERM_OPTS, this.currentPerm(), "权限");
-    this.sendBtn = toolbar.createEl("button", { cls: "dsh-send-btn", text: "发送" });
+    /* 排队提示条 */
+    this.queueEl = container.createDiv({ cls: "dsh-queue dsh-hidden" });
+
+    /* 输入区：文本框 + 底部工具栏（模型/强度/权限 + 发送/停止） */
+    const inputContainer = container.createDiv({ cls: "agent-client-chat-input-container" });
+    const inputBox = inputContainer.createDiv({ cls: "agent-client-chat-input-box" });
+    this.inputBoxEl = inputBox;
+    // 自动附带当前笔记的提示 chip（点击可切换本会话的自动附带）
+    this.autoMentionEl = inputBox.createEl("button", { cls: "agent-client-auto-mention-inline dsh-hidden", attr: { title: "发送时自动附带当前笔记与选区；点击切换" } });
+    this.autoMentionBadge = this.autoMentionEl.createSpan({ cls: "agent-client-mention-badge" });
+    this.autoMentionIcon = this.autoMentionEl.createSpan({ cls: "agent-client-auto-mention-toggle-icon" });
+    setIcon(this.autoMentionIcon, "link");
+    this.autoMentionEl.addEventListener("click", () => {
+      if (!this.session) return;
+      const cur = this.session.autoAttach !== false;
+      this.session.autoAttach = !cur;
+      this.updateAutoMentionChip();
+    });
+    this.inputEl = inputBox.createEl("textarea", { cls: "agent-client-chat-input-textarea", attr: { placeholder: "给 DSH 下达任务…（Enter 发送 · Shift+Enter 换行 · Ctrl+Enter 插话 · @ 提及笔记）", rows: "3" } });
+    const actions = inputBox.createDiv({ cls: "agent-client-chat-input-actions" });
+    this.modelBtn = this.toolbarDropdown(actions, "模型", this.modelOptions(), this.currentModel(), (v) => { if (this.session) this.session.model = v; });
+    this.effortBtn = this.toolbarDropdown(actions, "强度", EFFORT_OPTS, this.currentEffort(), (v) => { if (this.session) this.session.effort = v; });
+    this.permBtn = this.toolbarDropdown(actions, "权限", PERM_OPTS, this.currentPerm(), (v) => { if (this.session) this.session.permission = v; });
+    this.sendBtn = actions.createEl("button", { cls: "agent-client-chat-send-button", attr: { title: "发送" } });
+    setIcon(this.sendBtn, "send-horizontal");
     this.sendBtn.addEventListener("click", () => this.onSendButton());
+
     this.inputEl.addEventListener("keydown", (e) => {
       if (e.isComposing) return; // 中文输入法组词中的 Enter 不触发发送
+      // @提及弹层打开时：方向键/回车/Tab/ESC 优先交给弹层
+      if (this.mentionPopupOpen()) {
+        if (e.key === "ArrowDown") { e.preventDefault(); this.moveMention(1); return; }
+        if (e.key === "ArrowUp") { e.preventDefault(); this.moveMention(-1); return; }
+        if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); this.selectMention(); return; }
+        if (e.key === "Escape") { this.closeMentionPopup(); return; }
+      }
       if (e.key === "Enter") {
         if (e.ctrlKey || e.metaKey) {
           e.preventDefault();
@@ -440,11 +573,204 @@ class DSHChatView extends ItemView {
         }
       }
     });
+    // 自动调整文本框高度 + 同步发送按钮图标状态 + @提及弹层
+    this.inputEl.addEventListener("input", () => { this.autoGrowInput(); this.updateSendIcon(); this.openMentionPopup(); });
 
     this.syncSelectionRow();
     this.renderSessionPanel();
     this.renderMessages();
     this.updateHeader();
+    this.updateAutoMentionChip();
+    // 切换笔记时刷新自动附带提示
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.updateAutoMentionChip()));
+  }
+
+  /** 自动附带提示 chip：显示当前笔记名 + 可点击切换 */
+  updateAutoMentionChip() {
+    if (!this.autoMentionEl || !this.autoMentionBadge) return;
+    const on = this.session ? this.session.autoAttach !== false : true;
+    const file = this.app.workspace.getActiveFile();
+    const s = this.plugin.settings;
+    if (!on || !file || !s.autoAttachNote) {
+      this.autoMentionEl.addClass("dsh-hidden");
+      return;
+    }
+    this.autoMentionEl.removeClass("dsh-hidden");
+    const seg = s.autoAttachSelection ? " + 选区" : "";
+    this.autoMentionBadge.setText("正在自动附加：当前笔记" + seg);
+    this.autoMentionBadge.classList.toggle("agent-client-disabled", false);
+  }
+
+  /** 头部导航按钮（与 Obsidian 侧栏按钮一致的 icon 按钮） */
+  navActionBtn(parent, icon, label, onClick) {
+    const btn = parent.createEl("div", { cls: "clickable-icon nav-action-button", attr: { "aria-label": label, title: label } });
+    setIcon(btn, icon);
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+
+  /** 更多菜单 */
+  showHeaderMenu(ev) {
+    const menu = new Menu();
+    menu.addItem((it) => it.setTitle("新建会话").setIcon("plus").onClick(() => this.newSession()));
+    menu.addItem((it) => it.setTitle("浮动聊天窗").setIcon("panel-top").onClick(() => this.plugin.toggleFloatingChat()));
+    menu.addItem((it) => it.setTitle(this.sessionsOpen ? "收起会话列表" : "展开会话列表").setIcon("list").onClick(() => { this.sessionsOpen = !this.sessionsOpen; this.renderSessionPanel(); }));
+    menu.addItem((it) => it.setTitle("清空当前会话").setIcon("trash").onClick(() => { if (this.session) { this.session.messages = []; this.plugin.saveSession(this.session); this.renderMessages(); } }));
+    menu.addItem((it) => it.setTitle("打开设置").setIcon("settings").onClick(() => { try { this.app.setting.open(); this.app.setting.openTabById("dsh"); } catch (e) { /* ignore */ } }));
+    menu.addSeparator();
+    menu.addItem((it) => it.setTitle("导出为 Markdown").setIcon("save").onClick(() => this.exportChat()));
+    menu.showAtMouseEvent(ev);
+  }
+
+  /** 会话历史弹窗（参考 agent-client 的 SessionHistoryModal） */
+  openHistoryModal() {
+    const modal = new DSHSessionHistoryModal(this.app, this.plugin, (s) => this.loadSession(s));
+    modal.open();
+  }
+
+  /** 底部工具栏下拉（用 Obsidian Menu，参考 agent-client 的 ToolbarDropdown） */
+  toolbarDropdown(parent, label, opts, value, onChange) {
+    const btn = parent.createEl("button", { cls: "agent-client-toolbar-dropdown", attr: { title: label } });
+    const area = btn.createSpan({ cls: "agent-client-toolbar-dropdown-label-area" });
+    for (const o of opts) area.createSpan({ cls: "agent-client-toolbar-dropdown-sizer", text: o.label });
+    const lab = area.createSpan({ cls: "agent-client-toolbar-dropdown-label", text: value != null ? (opts.find((o) => o.value === value) || {}).label || label : label });
+    const chev = btn.createSpan({ cls: "agent-client-toolbar-dropdown-chevron" });
+    setIcon(chev, "chevron-down");
+    btn.addEventListener("click", (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const menu = new Menu();
+      menu.addItem((it) => it.setTitle(label).setIsLabel(true));
+      for (const o of opts) {
+        menu.addItem((it) => it.setTitle(o.label).setChecked(o.value === btn.__value).onClick(() => {
+          btn.__value = o.value;
+          lab.setText(o.label);
+          onChange(o.value);
+        }));
+      }
+      menu.showAtMouseEvent(e);
+    });
+    // 存储当前值以便 syncSelectionRow 刷新 label
+    btn.__value = value;
+    btn.__opts = opts;
+    btn.__label = label;
+    return btn;
+  }
+
+  autoGrowInput() {
+    if (!this.inputEl) return;
+    this.inputEl.style.height = "auto";
+    this.inputEl.style.height = Math.min(this.inputEl.scrollHeight, 300) + "px";
+  }
+
+  /* ---------- @提及笔记（参考 agent-client 的 Mention 弹层） ---------- */
+
+  mentionPopupOpen() {
+    return !!(this.mentionPopupEl && !this.mentionPopupEl.classList.contains("dsh-hidden"));
+  }
+
+  /** 输入框光标前的 @query → 打开/刷新弹层 */
+  openMentionPopup() {
+    if (!this.inputEl || !this.inputBoxEl) return;
+    const text = this.inputEl.value || "";
+    const caret = this.inputEl.selectionStart != null ? this.inputEl.selectionStart : text.length;
+    const lineStart = text.lastIndexOf("\n", caret - 1) + 1;
+    const before = text.slice(lineStart, caret);
+    const atIdx = before.lastIndexOf("@");
+    if (atIdx < 0) { this.closeMentionPopup(); return; }
+    const q = before.slice(atIdx + 1);
+    if (q.length > 40 || q.indexOf(" ") >= 0) { this.closeMentionPopup(); return; }
+    if (this.mentionQuery === q && this.mentionPopupEl && !this.mentionPopupEl.classList.contains("dsh-hidden")) return;
+    this.mentionQuery = q;
+    this.mentionInsertPos = lineStart + atIdx + 1;
+    this.renderMentionPopup(this.searchNotes(q));
+  }
+
+  searchNotes(q) {
+    const files = this.app.vault.getMarkdownFiles();
+    const ql = String(q || "").toLowerCase();
+    const scored = [];
+    for (const f of files) {
+      const name = f.basename.toLowerCase();
+      const path = f.path.toLowerCase();
+      let score = -1;
+      if (!ql) score = 0;
+      else if (name.startsWith(ql)) score = 0;
+      else if (name.includes(ql)) score = 1;
+      else if (path.includes(ql)) score = 2;
+      if (score >= 0) scored.push({ file: f, score });
+    }
+    scored.sort((a, b) => (a.score - b.score) || a.file.basename.localeCompare(b.file.basename));
+    return scored.slice(0, 20);
+  }
+
+  renderMentionPopup(items) {
+    if (!this.mentionPopupEl) {
+      this.mentionPopupEl = this.inputBoxEl.createDiv({ cls: "agent-client-mention-dropdown dsh-hidden" });
+    }
+    this.mentionPopupEl.empty();
+    this.mentionItems = items;
+    this.mentionIndex = 0;
+    if (items.length === 0) {
+      this.mentionPopupEl.createDiv({ cls: "agent-client-mention-dropdown-item agent-client-mention-dropdown-empty", text: "无匹配笔记" });
+    } else {
+      for (const it of items) {
+        const item = this.mentionPopupEl.createDiv({ cls: "agent-client-mention-dropdown-item" });
+        item.createDiv({ cls: "agent-client-mention-dropdown-item-name", text: it.file.basename });
+        item.createDiv({ cls: "agent-client-mention-dropdown-item-path", text: it.file.path });
+        item.addEventListener("click", () => this.insertMention(it));
+      }
+    }
+    this.mentionPopupEl.removeClass("dsh-hidden");
+    this.highlightMention();
+  }
+
+  highlightMention() {
+    const kids = (this.mentionPopupEl && this.mentionPopupEl.children) || [];
+    kids.forEach((el, i) => {
+      if (el.classList && el.classList.toggle) el.classList.toggle("agent-client-selected", i === this.mentionIndex);
+    });
+  }
+
+  moveMention(delta) {
+    const n = (this.mentionItems || []).length;
+    if (!n) return;
+    this.mentionIndex = (this.mentionIndex + delta + n) % n;
+    this.highlightMention();
+  }
+
+  selectMention() {
+    const it = (this.mentionItems || [])[this.mentionIndex];
+    if (it) this.insertMention(it);
+  }
+
+  insertMention(it) {
+    if (!this.inputEl) return;
+    const pos = this.mentionInsertPos != null ? this.mentionInsertPos : (this.inputEl.selectionStart || 0);
+    const before = this.inputEl.value.slice(0, pos);
+    const after = this.inputEl.value.slice(pos);
+    const mention = "@[[" + it.file.basename + "]]";
+    this.inputEl.value = before + mention + after;
+    this.inputEl.focus();
+    const newPos = pos + mention.length;
+    this.inputEl.selectionStart = this.inputEl.selectionEnd = newPos;
+    this.closeMentionPopup();
+    this.autoGrowInput();
+    this.updateSendIcon();
+  }
+
+  closeMentionPopup() {
+    if (this.mentionPopupEl) this.mentionPopupEl.addClass("dsh-hidden");
+    this.mentionItems = [];
+    this.mentionQuery = null;
+  }
+
+  /** 从文本里提取 @[[笔记名]] 提及 */
+  parseMentions(text) {
+    const out = [];
+    const re = /@\[\[([^\]]+)\]\]/g;
+    let m;
+    while ((m = re.exec(String(text || "")))) out.push(m[1]);
+    return out;
   }
 
   onClose() {
@@ -486,54 +812,57 @@ class DSHChatView extends ItemView {
     return this.plugin.settings.permissionMode || "workspace-write";
   }
 
-  makeSelect(container, opts, value, label) {
-    const wrap = container.createDiv({ cls: "dsh-select-wrap" });
-    const lab = wrap.createSpan({ cls: "dsh-select-label", text: label });
-    lab.setAttribute("title", label);
-    const sel = wrap.createEl("select", { cls: "dsh-select" });
-    for (const o of opts) {
-      const opt = sel.createEl("option", { text: o.label, value: o.value });
-      if (o.value === value) opt.selected = true;
+  /** 刷新工具栏下拉的当前值 + label */
+  setToolbarValue(btn, value) {
+    if (!btn) return;
+    btn.__value = value;
+    const labelEl = btn.querySelector(".agent-client-toolbar-dropdown-label");
+    if (labelEl) {
+      const o = (btn.__opts || []).find((x) => x.value === value);
+      labelEl.setText(o ? o.label : (btn.__label || ""));
     }
-    return sel;
   }
 
   syncSelectionRow() {
-    if (!this.modelSel) return;
-    this.modelSel.value = this.currentModel();
-    this.effortSel.value = this.currentEffort();
-    this.permSel.value = this.currentPerm();
+    this.setToolbarValue(this.modelBtn, this.currentModel());
+    this.setToolbarValue(this.effortBtn, this.currentEffort());
+    this.setToolbarValue(this.permBtn, this.currentPerm());
   }
 
   /** 扫描模型后刷新模型下拉（保留当前选择） */
   refreshModelOptions() {
-    if (!this.modelSel || !this.modelSel.parentElement) return;
-    const keep = this.modelSel.value || this.currentModel();
+    if (!this.modelBtn) return;
+    const keep = this.currentModel();
     const opts = this.modelOptions();
-    while (this.modelSel.firstChild) this.modelSel.removeChild(this.modelSel.firstChild);
-    for (const o of opts) {
-      const opt = this.modelSel.createEl("option", { text: o.label, value: o.value });
-      if (o.value === keep) opt.selected = true;
+    this.modelBtn.__opts = opts;
+    this.modelBtn.__value = keep;
+    const area = this.modelBtn.querySelector(".agent-client-toolbar-dropdown-label-area");
+    if (area) {
+      area.empty();
+      for (const o of opts) area.createSpan({ cls: "agent-client-toolbar-dropdown-sizer", text: o.label });
+      area.createSpan({ cls: "agent-client-toolbar-dropdown-label", text: (opts.find((o) => o.value === keep) || {}).label || "模型" });
     }
   }
 
   selectionSnapshot() {
     return {
-      model: this.modelSel ? this.modelSel.value : this.currentModel(),
-      effort: this.effortSel ? this.effortSel.value : this.currentEffort(),
-      permission: this.permSel ? this.permSel.value : this.currentPerm(),
+      model: this.modelBtn ? this.modelBtn.__value : this.currentModel(),
+      effort: this.effortBtn ? this.effortBtn.__value : this.currentEffort(),
+      permission: this.permBtn ? this.permBtn.__value : this.currentPerm(),
     };
   }
 
   /* ---------- 会话面板 ---------- */
 
   renderSessionPanel() {
+    if (!this.sessionsPanel) return;
     this.sessionsPanel.toggleClass("dsh-hidden", !this.sessionsOpen);
     if (!this.sessionsOpen) return;
     this.renderSessionList();
   }
 
   async renderSessionList() {
+    if (!this.sessionsListEl) return;
     this.sessionsListEl.empty();
     const sessions = await this.plugin.listSessions();
     // 用缓存覆盖磁盘（运行中的会话可能比磁盘新），并补上缓存里有但磁盘还没有的新会话
@@ -582,25 +911,34 @@ class DSHChatView extends ItemView {
   /* ---------- 消息渲染 ---------- */
 
   renderMessageEl(m) {
-    const wrap = this.messagesEl.createDiv({ cls: "dsh-message dsh-message-" + (m.role === "user" ? "user" : m.role === "error" ? "error" : "assistant") });
-    const head = wrap.createDiv({ cls: "dsh-message-head" });
-    head.createSpan({ cls: "dsh-message-role", text: m.role === "user" ? "我" : m.role === "error" ? "错误" : "DSH" });
-    head.createSpan({ cls: "dsh-message-time", text: fmtTime(m.ts) });
-    const body = wrap.createDiv({ cls: "dsh-message-body" });
+    const isUser = m.role === "user";
+    const wrap = this.messagesEl.createDiv({ cls: "agent-client-message-renderer agent-client-message-" + (isUser ? "user" : "assistant") });
     if (m.role === "user") {
-      body.createDiv({ text: m.content || "" });
+      const txt = wrap.createDiv({ cls: "agent-client-text-with-mentions" });
+      this.renderMentionsText(txt, m.content || "");
     } else if (m.role === "error") {
-      const pre = body.createEl("pre", { cls: "dsh-error-pre" });
+      const pre = wrap.createEl("pre", { cls: "dsh-error-pre" });
       pre.setText(m.content || "未知错误");
     } else {
       const content = (m.content || "").trim();
       if (!content) {
-        body.createDiv({ cls: "dsh-empty-reply", text: "（空回复）" });
+        wrap.createDiv({ cls: "agent-client-chat-empty-state", text: "（空回复）" });
       } else {
-        MarkdownRenderer.renderMarkdown(content, body, "", this);
+        const md = wrap.createDiv({ cls: "agent-client-markdown-text-renderer" });
+        MarkdownRenderer.renderMarkdown(content, md, "", this);
       }
     }
-    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    // 悬停操作：复制按钮（回复内容本身可鼠标选中复制）
+    if (!isUser) {
+      const actions = wrap.createDiv({ cls: "agent-client-message-actions" });
+      const copyBtn = actions.createEl("button", { cls: "clickable-icon agent-client-message-action-button", attr: { "aria-label": "复制", title: "复制" } });
+      setIcon(copyBtn, "copy");
+      copyBtn.addEventListener("click", () => {
+        try {
+          navigator.clipboard.writeText(m.content || "").then(() => new Notice("已复制"));
+        } catch (e) { /* ignore */ }
+      });
+    }
     return wrap;
   }
 
@@ -673,29 +1011,45 @@ class DSHChatView extends ItemView {
     }
   }
 
+  /** 把 @[[笔记]] 渲染成可点击的提及 chip */
+  renderMentionsText(container, text) {
+    const re = /@\[\[([^\]]+)\]\]/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      if (m.index > last) container.createSpan({ text: text.slice(last, m.index) });
+      const chip = container.createSpan({ cls: "agent-client-text-mention", text: "@" + m[1] });
+      chip.addEventListener("click", () => this.openInternalLink(m[1]));
+      last = m.index + m[0].length;
+    }
+    if (last < text.length) container.createSpan({ text: text.slice(last) });
+  }
+
   /** 渲染折叠的思考面板（assistant 消息上方；无论有无内容都显示，永不消失） */
   renderThinkingPanel(thinking) {
     const tools = thinking && Array.isArray(thinking.tools) ? thinking.tools : [];
     const hasReasoning = !!(thinking && thinking.reasoning);
     const hasTools = tools.length > 0;
-    const panel = this.messagesEl.createDiv({ cls: "dsh-thinking-summary" });
-    const head = panel.createDiv({ cls: "dsh-thinking-head" });
-    head.createSpan({ cls: "dsh-thinking-emoji", text: "🧠" });
-    head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · " + (thinking ? thinking.seconds : 0) + "s · " + tools.length + " 步工具" });
-    const body = panel.createDiv({ cls: "dsh-thinking-body dsh-hidden" });
+    const panel = this.messagesEl.createDiv({ cls: "agent-client-collapsible-thought" });
+    const head = panel.createDiv({ cls: "agent-client-collapsible-thought-header" });
+    head.createSpan({ text: "思考过程 · " + (thinking ? thinking.seconds : 0) + "s" + (tools.length ? " · " + tools.length + " 步工具" : "") });
+    const icon = head.createSpan({ cls: "agent-client-collapsible-thought-icon" });
+    setIcon(icon, "chevron-down");
+    const body = panel.createDiv({ cls: "agent-client-collapsible-thought-content dsh-hidden" });
     if (!hasReasoning && !hasTools) {
-      body.createDiv({ cls: "dsh-thinking-reason", text: "（本次没有推理/工具记录——可能是思考强度为关闭，或任务简单无需调用工具）" });
+      body.createDiv({ text: "（本次没有推理/工具记录——可能是思考强度为关闭，或任务简单无需调用工具）" });
     } else {
-      if (hasReasoning) body.createDiv({ cls: "dsh-thinking-reason", text: thinking.reasoning });
+      if (hasReasoning) body.createDiv({ cls: "agent-client-markdown-text-renderer", text: thinking.reasoning });
       if (hasTools) {
-        const t = body.createDiv({ cls: "dsh-thinking-tools" });
-        for (const line of tools) t.createDiv({ cls: "dsh-thinking-tool", text: line });
+        for (const line of tools) {
+          const t = body.createDiv({ cls: "agent-client-message-tool-call" });
+          t.createDiv({ cls: "agent-client-message-tool-call-title", text: line });
+        }
       }
     }
     head.addEventListener("click", () => {
-      const hidden = body.classList.contains("dsh-hidden");
-      if (hidden) body.classList.remove("dsh-hidden");
-      else body.classList.add("dsh-hidden");
+      const hidden = body.classList.toggle("dsh-hidden");
+      setIcon(icon, hidden ? "chevron-down" : "chevron-up");
     });
     return panel;
   }
@@ -728,14 +1082,15 @@ class DSHChatView extends ItemView {
 
   /* ---------- 发送 ---------- */
 
-  async getContextBlocks() {
+  async getContextBlocks(query) {
     const out = { blocks: "", notePath: null, selectionText: null };
     const s = this.plugin.settings;
+    const attach = this.session ? this.session.autoAttach !== false : true; // 会话级开关
     const file = this.app.workspace.getActiveFile();
     let notePath = null;
     let selection = null;
-    if (s.autoAttachNote && file) notePath = file.path;
-    if (s.autoAttachSelection) {
+    if (s.autoAttachNote && attach && file) notePath = file.path;
+    if (s.autoAttachSelection && attach) {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (view && view.editor) {
         const selText = view.editor.getSelection();
@@ -761,6 +1116,21 @@ class DSHChatView extends ItemView {
         '<editor_selection path="' + selection.path + '" lines="' + selection.fromLine + "-" + selection.toLine + '">\n<![CDATA[\n' +
         selection.text + "\n]]>\n</editor_selection>"
       );
+    }
+    // @[[笔记]] 提及：附加对应笔记的路径 + 内容
+    const mentions = this.parseMentions(query);
+    for (const m of mentions) {
+      let f = null;
+      try {
+        f = this.app.metadataCache.getFirstLinkpathDest(m, "") || this.app.vault.getAbstractFileByPath(m);
+      } catch (e) { /* ignore */ }
+      if (f && f instanceof TFile) {
+        parts.push('<linked_note path="' + f.path + '" />');
+        try {
+          const content = await this.app.vault.cachedRead(f);
+          parts.push('<note_content path="' + f.path + '">\n<![CDATA[\n' + String(content).slice(0, 30000) + "\n]]>\n</note_content>");
+        } catch (e) { /* ignore */ }
+      }
     }
     out.blocks = parts.join("\n\n");
     out.notePath = notePath;
@@ -948,7 +1318,7 @@ class DSHChatView extends ItemView {
         return;
       }
 
-      const ctx = await this.getContextBlocks();
+      const ctx = await this.getContextBlocks(query);
       const taskText = this.plugin.buildTaskText(session, query, ctx);
 
       session.messages.push({ role: "user", content: query, ts: Date.now(), notePath: ctx.notePath || undefined, selection: ctx.selectionText || undefined });
@@ -1015,12 +1385,25 @@ class DSHChatView extends ItemView {
   }
 
   updateRunningUI(running) {
-    this.sendBtn.setText(running ? "停止" : "发送");
+    if (!this.sendBtn) return;
+    setIcon(this.sendBtn, running ? "square" : "send-horizontal");
+    this.sendBtn.setAttribute("title", running ? "停止生成" : "发送消息");
+    this.updateSendIcon();
     if (!running) {
       this.stopStatusTimer();
       this.statusEl.addClass("dsh-hidden");
       this.statusEl.setText("");
     }
+  }
+
+  /** 发送/停止按钮图标状态：运行中=红方块；有输入=主题色；空输入=灰色 */
+  updateSendIcon() {
+    if (!this.sendBtn) return;
+    const running = !!(this.activeRun && this.activeRun.running);
+    const svg = this.sendBtn.querySelector("svg");
+    if (!svg) return;
+    svg.classList.remove("agent-client-icon-sending", "agent-client-icon-active", "agent-client-icon-inactive");
+    svg.classList.add(running ? "agent-client-icon-sending" : (this.inputEl && this.inputEl.value.trim() ? "agent-client-icon-active" : "agent-client-icon-inactive"));
   }
 
   startStatusTimer(run) {
@@ -1051,22 +1434,24 @@ class DSHChatView extends ItemView {
 
   /** 重建实时思考面板 DOM（开始运行时 & 切回运行中会话时共用） */
   renderLivePanel(run) {
-    const wrap = this.messagesEl.createDiv({ cls: "dsh-live" });
-    const head = wrap.createDiv({ cls: "dsh-thinking-head", attr: { title: "点击展开/收起" } });
-    head.createSpan({ cls: "dsh-thinking-emoji", text: "🧠" });
+    const wrap = this.messagesEl.createDiv({ cls: "agent-client-collapsible-thought" });
+    const head = wrap.createDiv({ cls: "agent-client-collapsible-thought-header", attr: { title: "点击展开/收起" } });
     const sec = Math.round((Date.now() - run.statusStart) / 1000);
-    this.thinkingTimeEl = head.createSpan({ cls: "dsh-thinking-time", text: "思考过程 · " + sec + "s（点击展开）" });
-    const body = wrap.createDiv({ cls: "dsh-thinking-body dsh-hidden" });
-    this.thinkingReasonEl = body.createDiv({ cls: "dsh-thinking-reason", text: (run.live && run.live.reasoning) || "" });
-    this.thinkingToolsEl = body.createDiv({ cls: "dsh-thinking-tools" });
+    this.thinkingTimeEl = head.createSpan({ text: "思考过程 · " + sec + "s（点击展开）" });
+    const icon = head.createSpan({ cls: "agent-client-collapsible-thought-icon" });
+    setIcon(icon, "chevron-down");
+    const body = wrap.createDiv({ cls: "agent-client-collapsible-thought-content dsh-hidden" });
+    this.thinkingReasonEl = body.createDiv({ cls: "agent-client-markdown-text-renderer", text: (run.live && run.live.reasoning) || "" });
+    this.thinkingToolsEl = body.createDiv();
     if (run.live && run.live.tools) {
-      for (const t of run.live.tools) this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: t });
+      for (const t of run.live.tools) this.addLiveToolLine(t);
     }
     this.liveBody = body;
+    this.liveIcon = icon;
     head.addEventListener("click", () => {
       if (!this.liveBody) return;
-      if (this.liveBody.classList.contains("dsh-hidden")) this.liveBody.classList.remove("dsh-hidden");
-      else this.liveBody.classList.add("dsh-hidden");
+      const hidden = this.liveBody.classList.toggle("dsh-hidden");
+      setIcon(this.liveIcon, hidden ? "chevron-down" : "chevron-up");
     });
     if (run.statusTimer) clearInterval(run.statusTimer);
     run.statusTimer = setInterval(() => {
@@ -1076,6 +1461,15 @@ class DSHChatView extends ItemView {
         this.thinkingTimeEl.setText("思考过程 · " + s2 + "s（点击展开）");
       }
     }, 1000);
+  }
+
+  /** 追加一行工具调用块（实时流式） */
+  addLiveToolLine(line) {
+    if (!this.thinkingToolsEl) return;
+    const t = this.thinkingToolsEl.createDiv({ cls: "agent-client-message-tool-call" });
+    t.createDiv({ cls: "agent-client-message-tool-call-title", text: line });
+    t.setAttribute("title", line);
+    return t;
   }
 
   renderLivePanelIfRunning() {
@@ -1096,20 +1490,14 @@ class DSHChatView extends ItemView {
       } else if (ev.type === "tool-call-chunks" && d.name) {
         const args = (Array.isArray(d.args) ? d.args.join("") : String(d.args || "")).replace(/\s+/g, " ").slice(0, 90);
         run.live.tools.push("⚙ " + d.name + (args ? "  " + args : ""));
-        if (isActive && this.thinkingToolsEl) {
-          const line = this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: run.live.tools[run.live.tools.length - 1] });
-          line.setAttribute("title", run.live.tools[run.live.tools.length - 1]);
-        }
+        if (isActive) this.addLiveToolLine(run.live.tools[run.live.tools.length - 1]);
         run.live.steps += 1;
       } else if (ev.type === "tool/call" && d.name) {
         // 去重（tool-call-chunks 已展示过同一 id 时不重复）
         if (run.live.tools.some((t) => t.indexOf(d.name) >= 0)) return;
         const args = String(d.arguments || "").replace(/\s+/g, " ").slice(0, 90);
         run.live.tools.push("⚙ " + d.name + (args ? "  " + args : ""));
-        if (isActive && this.thinkingToolsEl) {
-          const line = this.thinkingToolsEl.createDiv({ cls: "dsh-thinking-tool", text: run.live.tools[run.live.tools.length - 1] });
-          line.setAttribute("title", run.live.tools[run.live.tools.length - 1]);
-        }
+        if (isActive) this.addLiveToolLine(run.live.tools[run.live.tools.length - 1]);
         run.live.steps += 1;
       } else if (ev.type === "text-chunks" && Array.isArray(d.texts)) {
         run.live.text += d.texts.join("");
@@ -1145,8 +1533,68 @@ class DSHChatView extends ItemView {
   }
 
   updateHeader() {
+    if (!this.titleEl) return;
     const t = this.session ? this.session.title : "新会话";
-    this.titleEl.setText("DSH · " + t);
+    this.titleEl.setText(t);
+    const leaf = this.leaf;
+    if (leaf && typeof leaf.updateHeader === "function") {
+      try { leaf.updateHeader(); } catch (e) { /* ignore */ }
+    }
+  }
+
+  /* ---------- 导出为 Markdown（参考 agent-client 的 ChatExport） ---------- */
+
+  async exportChat() {
+    const session = this.session;
+    if (!session || !session.messages || session.messages.length === 0) {
+      new Notice("当前没有可导出的对话");
+      return;
+    }
+    const date = new Date();
+    const stamp = pad(date.getFullYear()) + pad(date.getMonth() + 1) + pad(date.getDate()) + "-" + pad(date.getHours()) + pad(date.getMinutes());
+    const safeTitle = (session.title || "会话").replace(/[\\/:*?"<>|]/g, "_");
+    const fname = "DSH 对话 " + safeTitle + " " + stamp + ".md";
+    const lines = [];
+    lines.push("---");
+    lines.push("title: " + (session.title || "DSH 对话"));
+    lines.push("date: " + date.toISOString());
+    lines.push("agent: DSH (DeepSeek Harness)");
+    lines.push("model: " + (session.model || "") );
+    lines.push("---");
+    lines.push("");
+    for (const m of session.messages) {
+      lines.push("## " + (m.role === "user" ? "我" : m.role === "error" ? "错误" : "DSH") + " · " + fmtTime(m.ts));
+      lines.push("");
+      if (m.role === "user") {
+        lines.push(String(m.content || ""));
+      } else if (m.role === "error") {
+        lines.push("> [!error] 错误\n> " + String(m.content || "").replace(/\n/g, "\n> "));
+      } else {
+        lines.push(String(m.content || ""));
+      }
+      lines.push("");
+    }
+    const content = lines.join("\n");
+    try {
+      const file = await this.app.vault.create(fname, content);
+      new Notice("已导出：" + fname);
+      this.app.workspace.getLeaf(false).openFile(file);
+    } catch (e) {
+      // 重名则尝试加序号
+      try {
+        for (let i = 2; i <= 99; i++) {
+          const alt = "DSH 对话 " + safeTitle + " " + stamp + "-" + i + ".md";
+          try {
+            const file = await this.app.vault.create(alt, content);
+            new Notice("已导出：" + alt);
+            this.app.workspace.getLeaf(false).openFile(file);
+            return;
+          } catch (e2) { /* try next */ }
+        }
+      } catch (e2) { /* ignore */ }
+      this.plugin.logError("exportChat", e);
+      new Notice("导出失败：" + (e && e.message ? e.message : String(e)));
+    }
   }
 }
 
@@ -1383,6 +1831,68 @@ class DSHSettingsTab extends PluginSettingTab {
     if (!String(this.plugin.settings.models || "").trim()) {
       setTimeout(() => this.discoverModels(null), 300);
     }
+  }
+}
+
+/* ============================ 会话历史弹窗 ============================ */
+
+class DSHSessionHistoryModal extends Modal {
+  constructor(app, plugin, onSelect) {
+    super(app);
+    this.plugin = plugin;
+    this.onSelect = onSelect;
+  }
+
+  async onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "会话历史" });
+    this.filterEl = contentEl.createEl("input", {
+      cls: "agent-client-session-history-filter",
+      attr: { placeholder: "搜索会话标题…", type: "text" },
+    });
+    this.listEl = contentEl.createDiv({ cls: "agent-client-session-history-list" });
+    this.filterEl.addEventListener("input", () => this.render());
+    this.filterEl.focus();
+    await this.render();
+  }
+
+  async render() {
+    this.listEl.empty();
+    const q = (this.filterEl ? this.filterEl.value : "").toLowerCase().trim();
+    let sessions = [];
+    try { sessions = await this.plugin.listSessions(); } catch (e) { /* ignore */ }
+    const filtered = q ? sessions.filter((s) => String(s.title || "").toLowerCase().includes(q)) : sessions;
+    if (filtered.length === 0) {
+      this.listEl.createDiv({ cls: "agent-client-session-history-empty", text: "暂无会话" });
+      return;
+    }
+    for (const s of filtered.slice(0, 100)) {
+      const item = this.listEl.createDiv({ cls: "agent-client-session-history-item" });
+      const content = item.createDiv({ cls: "agent-client-session-history-item-content" });
+      content.createDiv({ cls: "agent-client-session-history-item-title", text: s.title || "未命名" });
+      const meta = content.createDiv({ cls: "agent-client-session-history-item-metadata" });
+      meta.createSpan({ cls: "agent-client-session-history-item-timestamp", text: (s.messages ? s.messages.length : 0) + " 条消息 · " + fmtTime(s.lastActivityAt) });
+      const actions = item.createDiv({ cls: "agent-client-session-history-item-actions" });
+      const open = actions.createEl("div", { cls: "clickable-icon agent-client-session-history-action-icon agent-client-session-history-restore-icon", attr: { "aria-label": "打开", title: "打开" } });
+      setIcon(open, "arrow-right");
+      open.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.onSelect(s);
+        this.close();
+      });
+      const del = actions.createEl("div", { cls: "clickable-icon agent-client-session-history-action-icon", attr: { "aria-label": "删除", title: "删除" } });
+      setIcon(del, "trash");
+      del.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        await this.plugin.deleteSession(s.id);
+        this.render();
+      });
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
   }
 }
 
