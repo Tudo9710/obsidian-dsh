@@ -87,12 +87,12 @@ class MockItemView {
 }
 
 class MockPlugin {
-  constructor(app, manifest) { this.app = app; this.manifest = manifest; this.settings = {}; this._viewFactory = null; }
+  constructor(app, manifest) { this.app = app; this.manifest = manifest; this.settings = {}; this._viewFactory = null; this._viewFactories = {}; }
   async loadData() { return undefined; }
   async saveData() {}
   async saveSettings() {}
   logError() {}
-  registerView(type, factory) { this._viewFactory = factory; }
+  registerView(type, factory) { this._viewFactories[type] = factory; this._viewFactory = factory; }
   registerMarkdownCodeBlockProcessor() {}
   addRibbonIcon() {}
   addCommand() {}
@@ -181,7 +181,7 @@ const mockApp = () => ({
     const plugin = new DSHPlugin(mockApp(), { id: "dsh", name: "DSH", version: "1.0.0" });
     await plugin.onload();
     const leaf = { app: plugin.app };
-    const view = plugin._viewFactory(leaf);
+    const view = plugin._viewFactories["dsh-chat-view"](leaf);
     await view.onOpen();
     view.onClose();
     console.log("✅ 视图 onOpen() 成功（DOM 构建正常）");
@@ -222,7 +222,7 @@ const mockApp = () => ({
     const plugin = new DSHPlugin(mockApp(), { id: "dsh", name: "DSH", version: "1.0.0" });
     await plugin.onload();
     const leaf = { app: plugin.app };
-    const view = plugin._viewFactory(leaf);
+    const view = plugin._viewFactories["dsh-chat-view"](leaf);
     await view.onOpen();
     view.session = {
       id: "conv-test-1",
@@ -257,7 +257,7 @@ const mockApp = () => ({
     const plugin = new DSHPlugin(mockApp(), { id: "dsh", name: "DSH", version: "1.0.0" });
     await plugin.onload();
     const leaf = { app: plugin.app };
-    const view = plugin._viewFactory(leaf);
+    const view = plugin._viewFactories["dsh-chat-view"](leaf);
     await view.onOpen();
     const session = {
       id: "conv-test-2",
@@ -292,6 +292,25 @@ const mockApp = () => ({
     console.log("✅ 思考存入消息，重复渲染面板稳定出现且可展开（内容=" + JSON.stringify(thinking) + "）");
   } catch (e) {
     console.error("❌ 真实流程复现抛错:");
+    console.error(e && e.stack ? e.stack : e);
+    process.exit(1);
+  }
+
+  console.log("== 7) 会话管理器视图 + 浮动按钮设置 + 回到底部按钮 ==");
+  try {
+    const plugin = new DSHPlugin(mockApp(), { id: "dsh", name: "DSH", version: "1.0.0" });
+    await plugin.onload();
+    const leaf = { app: plugin.app };
+    const mgr = plugin._viewFactories["dsh-session-manager-view"](leaf);
+    await mgr.onOpen();
+    mgr.onClose();
+    const chat = plugin._viewFactories["dsh-chat-view"](leaf);
+    await chat.onOpen();
+    if (!chat.scrollBtn) { console.error("❌ 未创建回到底部按钮"); process.exit(1); }
+    chat.onClose();
+    console.log("✅ 会话管理器视图 + 回到底部按钮正常");
+  } catch (e) {
+    console.error("❌ 新增视图测试抛错:");
     console.error(e && e.stack ? e.stack : e);
     process.exit(1);
   }
