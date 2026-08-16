@@ -68,6 +68,16 @@
   font-size: var(--font-ui-small);
 }
 
+.dsh-queue {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-warning, #e6a23c);
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  padding: 4px 8px;
+  word-break: break-all;
+}
+
 .dsh-input-toolbar {
   display: flex;
   align-items: center;

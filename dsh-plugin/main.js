@@ -873,6 +873,7 @@ class DSHChatView extends ItemView {
     this.statusStart = 0;
     this.live = null;
     this._pendingThinking = null;
+    this.queue = [];
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -907,19 +908,21 @@ class DSHChatView extends ItemView {
 
     /* 输入区：选择器（模型/强度/权限）与发送同一排 */
     const inputWrap = root.createDiv({ cls: "dsh-input-wrap" });
-    this.inputEl = inputWrap.createEl("textarea", { cls: "dsh-input", attr: { placeholder: "给 DSH 下达任务…（Enter 发送，Shift+Enter 换行）", rows: "3" } });
+    this.inputEl = inputWrap.createEl("textarea", { cls: "dsh-input", attr: { placeholder: "给 DSH 下达任务…（Enter 发送/排队，Shift+Enter 换行）", rows: "3" } });
+    // 排队提示条
+    this.queueEl = inputWrap.createDiv({ cls: "dsh-queue dsh-hidden" });
     const toolbar = inputWrap.createDiv({ cls: "dsh-input-toolbar" });
     const selects = toolbar.createDiv({ cls: "dsh-toolbar-selects" });
     this.modelSel = this.makeSelect(selects, this.modelOptions(), this.currentModel(), "模型");
     this.effortSel = this.makeSelect(selects, EFFORT_OPTS, this.currentEffort(), "强度");
     this.permSel = this.makeSelect(selects, PERM_OPTS, this.currentPerm(), "权限");
     this.sendBtn = toolbar.createEl("button", { cls: "dsh-send-btn", text: "发送" });
-    this.sendBtn.addEventListener("click", () => this.send());
+    this.sendBtn.addEventListener("click", () => this.onSendButton());
     this.inputEl.addEventListener("keydown", (e) => {
       if (e.isComposing) return; // 中文输入法组词中的 Enter 不触发发送
       if (e.key === "Enter" && !e.shiftKey && this.plugin.settings.enterToSend) {
         e.preventDefault();
-        this.send();
+        this.onSend();
       }
     });
 
@@ -1176,11 +1179,51 @@ class DSHChatView extends ItemView {
     return out;
   }
 
-  async send() {
-    if (this.running || this.disposed) return;
+  /* ---------- 发送 / 排队 / 中断 ---------- */
+
+  onSendButton() {
+    if (this.running) this.cancel();
+    else this.onSend();
+  }
+
+  async onSend() {
+    if (this.disposed) return;
     const query = this.inputEl.value.trim();
     if (!query) return;
+    if (this.running) {
+      // 运行中：加入排队
+      this.queue.push(query);
+      this.inputEl.value = "";
+      this.renderQueue();
+      new Notice("已加入排队（" + this.queue.length + " 条），当前任务完成后自动运行");
+      return;
+    }
+    this.inputEl.value = "";
+    await this.runOne(query);
+  }
 
+  cancel() {
+    if (!this.running || !this.cancelToken) return;
+    this.cancelToken.cancelled = true;
+    if (this.cancelToken.cancel) this.cancelToken.cancel();
+    this.queue.length = 0; // 清空排队
+    this.renderQueue();
+    new Notice("正在停止…");
+  }
+
+  renderQueue() {
+    if (!this.queueEl) return;
+    if (this.queue.length === 0) {
+      this.queueEl.addClass("dsh-hidden");
+      this.queueEl.setText("");
+      return;
+    }
+    this.queueEl.removeClass("dsh-hidden");
+    const first = truncate(this.queue[0], 40);
+    this.queueEl.setText("⏳ 排队中 " + this.queue.length + " 条" + (first ? "：接下来「" + first + "」" : "") + "（完成后自动运行）");
+  }
+
+  async runOne(query) {
     this.running = true;
     this.updateRunningUI(true);
 
@@ -1212,7 +1255,6 @@ class DSHChatView extends ItemView {
       const taskText = this.plugin.buildTaskText(this.session, query, ctx);
 
       this.session.messages.push({ role: "user", content: query, ts: Date.now(), notePath: ctx.notePath || undefined, selection: ctx.selectionText || undefined });
-      this.inputEl.value = "";
       this.renderMessages();
       this.updateHeader();
 
@@ -1244,7 +1286,10 @@ class DSHChatView extends ItemView {
 
       const thinking = this._pendingThinking || null;
       this._pendingThinking = null;
-      if (res.ok) {
+      if (res.cancelled) {
+        const partial = (res.stdout || "").trim();
+        this.session.messages.push({ role: "assistant", content: partial ? partial + "\n\n（已取消）" : "（已取消）", ts: Date.now(), thinking });
+      } else if (res.ok) {
         const answer = (res.stdout || "").trim();
         this.session.messages.push({ role: "assistant", content: answer, ts: Date.now(), thinking });
       } else {
@@ -1265,12 +1310,19 @@ class DSHChatView extends ItemView {
       this.running = false;
       this.updateRunningUI(false);
     }
+    // 排空队列：依次处理下一条
+    if (!this.disposed && this.queue.length > 0) {
+      const next = this.queue.shift();
+      this.renderQueue();
+      await this.runOne(next);
+    } else {
+      this.renderQueue();
+    }
   }
 
   updateRunningUI(running) {
-    this.inputEl.disabled = running;
-    this.sendBtn.disabled = running;
-    this.sendBtn.setText(running ? "思考中…" : "发送");
+    // 输入框保持可用（运行中可继续输入，Enter 入队）
+    this.sendBtn.setText(running ? "停止" : "发送");
     if (!running) {
       this.stopStatusTimer();
       this.statusEl.addClass("dsh-hidden");
