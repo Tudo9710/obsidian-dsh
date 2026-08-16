@@ -69,6 +69,7 @@ class MockItemView {
     this.contentEl = makeEl();
     this.app = leaf && leaf.app;
   }
+  registerDomEvent() {}
   onClose() {}
 }
 

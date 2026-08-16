@@ -903,6 +903,16 @@ class DSHChatView extends ItemView {
 
     /* 消息区 */
     this.messagesEl = root.createDiv({ cls: "dsh-messages" });
+    // 内部链接（[[wikilink]] → a[data-href]）点击导航：自定义视图里手动接管跳转
+    this.registerDomEvent(this.messagesEl, "click", (e) => {
+      const a = e.target && e.target.closest ? e.target.closest("a.internal-link, a[data-href]") : null;
+      if (!a) return;
+      const href = a.getAttribute("data-href") || a.getAttribute("href");
+      if (!href) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.app.workspace.openLinkText(href, "", false);
+    });
 
     /* 状态条 */
     this.statusEl = root.createDiv({ cls: "dsh-status dsh-hidden" });
