@@ -112,6 +112,12 @@
   gap: 2px;
 }
 
+.dsh-queue-actions .dsh-icon-btn {
+  padding: 1px;
+  --icon-size: 12px;
+  border-radius: 4px;
+}
+
 .dsh-queue-zap {
   color: var(--text-warning, #e6a23c);
 }
@@ -153,7 +159,6 @@
   border: 1px solid var(--background-modifier-border);
   color: var(--text-normal);
   text-align: center;
-  text-align-last: center;
 }
 
 .dsh-send-btn {
