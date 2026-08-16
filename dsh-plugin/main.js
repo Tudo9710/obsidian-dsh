@@ -12,7 +12,7 @@
  */
 "use strict";
 
-const { Plugin, PluginSettingTab, ItemView, MarkdownView, MarkdownRenderer, Notice, Setting, setIcon } = require("obsidian");
+const { Plugin, PluginSettingTab, ItemView, MarkdownView, MarkdownRenderer, Notice, Setting, setIcon, TFolder, TFile } = require("obsidian");
 const path = require("path");
 /* ============================================================
  * dsh-provider（内联自 dsh-provider.js，保持单文件以便 Obsidian 加载）
@@ -911,7 +911,7 @@ class DSHChatView extends ItemView {
       if (!href) return;
       e.preventDefault();
       e.stopPropagation();
-      this.app.workspace.openLinkText(href, "", false);
+      this.openInternalLink(href);
     });
 
     /* 状态条 */
@@ -1098,6 +1098,75 @@ class DSHChatView extends ItemView {
     }
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     return wrap;
+  }
+
+  /** 打开内部链接：目标是文件夹就在文件树里展开定位，是笔记就正常跳转 */
+  async openInternalLink(linktext) {
+    try {
+      const vault = this.app.vault;
+      let target = vault.getAbstractFileByPath(linktext);
+      if (!target) {
+        target = this.app.metadataCache.getFirstLinkpathDest(linktext, "");
+      }
+      if (!target) {
+        const name = String(linktext).split("/").pop().replace(/\.md$/i, "");
+        target = this.findFolderByName(name);
+      }
+      if (target instanceof TFolder) {
+        await this.revealFolder(target);
+      } else {
+        this.app.workspace.openLinkText(linktext, "", false);
+      }
+    } catch (e) {
+      this.plugin.logError("openInternalLink", e);
+      this.app.workspace.openLinkText(linktext, "", false);
+    }
+  }
+
+  findFolderByName(name) {
+    if (!name) return null;
+    let found = null;
+    const walk = (folder) => {
+      if (found) return;
+      for (const child of folder.children) {
+        if (child instanceof TFolder && child.name === name) { found = child; return; }
+      }
+      for (const child of folder.children) {
+        if (child instanceof TFolder) walk(child);
+      }
+    };
+    walk(this.app.vault.getRoot());
+    return found;
+  }
+
+  findFirstFile(folder) {
+    for (const child of folder.children) {
+      if (child instanceof TFile) return child;
+      if (child instanceof TFolder) {
+        const f = this.findFirstFile(child);
+        if (f) return f;
+      }
+    }
+    return null;
+  }
+
+  /** 在文件资源管理器里展开并定位文件夹 */
+  async revealFolder(folder) {
+    let leaf = this.app.workspace.getLeavesOfType("file-explorer")[0];
+    if (!leaf) {
+      leaf = this.app.workspace.getLeftLeaf(false) || this.app.workspace.getLeaf(true);
+      if (leaf) await leaf.setViewState({ type: "file-explorer" });
+    }
+    const fe = (this.app.workspace.getLeavesOfType("file-explorer")[0] || {}).view;
+    if (!fe) return;
+    if (typeof fe.expandFolder === "function") {
+      fe.expandFolder(folder);
+      return;
+    }
+    const child = this.findFirstFile(folder);
+    if (child && typeof fe.revealInFolder === "function") {
+      fe.revealInFolder(child);
+    }
   }
 
   /** 渲染折叠的思考面板（assistant 消息上方；无论有无内容都显示，永不消失） */
