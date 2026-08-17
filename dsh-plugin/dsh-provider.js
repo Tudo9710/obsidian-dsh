@@ -150,6 +150,8 @@ function resolveSpawnTarget(userCommand, userNodePath) {
  * @param {(line:string)=>void} [opts.onStderr] stderr 逐行回调
  * @param {boolean} [opts.live] 开启实时事件流（会话明文 JSONL 到独立 root 并 tail）
  * @param {(ev:object)=>void} [opts.onEvent] 实时事件回调（reasoning-chunks / tool-call-chunks / text-chunks / tool/call …）
+ * @param {string} [opts.bridgePatchPath] 用户问答桥的 --patch 文件路径（写入后注入 ask_user_question 能力）
+ * @param {string} [opts.bridgeDir] 用户问答桥的问题/答案目录（会以 DSH_ASK_BRIDGE_DIR 传给子进程）
  * @returns {Promise<{ok:boolean, stdout:string, stderr:string, code:number|null, durationMs:number, target:object|null, cancelled:boolean}>}
  */
 function runHeadless(opts) {
@@ -263,13 +265,16 @@ function runHeadless(opts) {
       const env = { ...process.env };
       if (opts.dshHome) env.DSH_HOME = opts.dshHome;
       if (opts.permissionMode) env.DSH_PERMISSION_MODE = opts.permissionMode;
+      if (opts.bridgeDir) env.DSH_ASK_BRIDGE_DIR = opts.bridgeDir;
+
+      const bridgePatchArg = (opts.bridgePatchPath && opts.bridgeDir) ? ["--patch", opts.bridgePatchPath] : [];
 
       if (target.useCmd) {
         // 用户手填的 .cmd 且无法推导入口：交给 cmd.exe 执行（对参数做引号处理）
-        const cmdLine = [target.cmdName, "--profile", "headless", ...livePatchArg.map(quoteForCmd), ...extraTokens.map(quoteForCmd), quoteForCmd(task)].join(" ");
+        const cmdLine = [target.cmdName, "--profile", "headless", ...livePatchArg.map(quoteForCmd), ...bridgePatchArg.map(quoteForCmd), ...extraTokens.map(quoteForCmd), quoteForCmd(task)].join(" ");
         child = spawn("cmd.exe", ["/c", cmdLine], { cwd, env, windowsHide: true });
       } else {
-        const args = [...target.argsPrefix, "--profile", "headless", ...livePatchArg, ...extraTokens, task];
+        const args = [...target.argsPrefix, "--profile", "headless", ...livePatchArg, ...bridgePatchArg, ...extraTokens, task];
         child = spawn(target.command, args, { cwd, env, windowsHide: true });
       }
     } catch (err) {

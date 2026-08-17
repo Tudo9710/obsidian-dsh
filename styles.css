@@ -2406,3 +2406,19 @@ If your plugin does not need CSS, delete this file.
 	margin-right: 0;
 	width: 100%;
 }
+
+/* ---- DSH 提问选择框 ---- */
+.dsh-ask-modal h2 { margin-top: 0; }
+.dsh-ask-block { margin-bottom: 14px; }
+.dsh-ask-block h3 { margin: 0 0 4px 0; font-size: var(--font-ui-medium); }
+.dsh-ask-question { margin: 0 0 8px 0; color: var(--text-normal); white-space: pre-wrap; word-break: break-word; }
+.dsh-ask-question-hint { color: var(--text-muted); font-size: var(--font-ui-small); margin-bottom: 8px; }
+.dsh-ask-options { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.dsh-ask-option { text-align: left; display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px solid var(--background-modifier-border); border-radius: 6px; background: var(--background-secondary); color: var(--text-normal); cursor: pointer; }
+.dsh-ask-option:hover { background: var(--background-modifier-hover); }
+.dsh-ask-option.is-selected { border-color: var(--interactive-accent); background: var(--interactive-accent-hover); }
+.dsh-ask-option-label { font-weight: var(--font-medium); }
+.dsh-ask-option-desc { font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: pre-wrap; }
+.dsh-ask-custom { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
+.dsh-ask-note { font-size: var(--font-smallest); color: var(--text-faint); margin-bottom: 4px; }
+.dsh-ask-actions { display: flex; justify-content: flex-end; }

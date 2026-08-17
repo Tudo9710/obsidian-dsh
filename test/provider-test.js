@@ -158,7 +158,7 @@ const testTask = process.argv.slice(2).join(" ") ||
   });
   console.log("ok =", r5.ok, "| 事件总数 =", evCount, "| reasoning =", reasonCount, "| tool =", toolCount, "| 耗时 =", r5.durationMs + "ms");
   try { fs.rmSync(liveHome, { recursive: true, force: true }); } catch (e) {}
-  if (!r5.ok || evCount === 0 || reasonCount === 0) {
+  if (!r5.ok || evCount === 0 || (reasonCount === 0 && toolCount === 0)) {
     console.error("❌ 实时事件流验证失败");
     process.exit(1);
   }

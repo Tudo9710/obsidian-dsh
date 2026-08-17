@@ -171,6 +171,8 @@ const provider = (() => {
    * @param {(line:string)=>void} [opts.onStderr] stderr 逐行回调
    * @param {boolean} [opts.live] 开启实时事件流（会话明文 JSONL 到独立 root 并 tail）
    * @param {(ev:object)=>void} [opts.onEvent] 实时事件回调（reasoning-chunks / tool-call-chunks / text-chunks / tool/call …）
+   * @param {string} [opts.bridgePatchPath] 用户问答桥的 --patch 文件路径（写入后注入 ask_user_question 能力）
+   * @param {string} [opts.bridgeDir] 用户问答桥的问题/答案目录（会以 DSH_ASK_BRIDGE_DIR 传给子进程）
    * @returns {Promise<{ok:boolean, stdout:string, stderr:string, code:number|null, durationMs:number, target:object|null, cancelled:boolean}>}
    */
   function runHeadless(opts) {
@@ -284,13 +286,16 @@ const provider = (() => {
         const env = { ...process.env };
         if (opts.dshHome) env.DSH_HOME = opts.dshHome;
         if (opts.permissionMode) env.DSH_PERMISSION_MODE = opts.permissionMode;
+        if (opts.bridgeDir) env.DSH_ASK_BRIDGE_DIR = opts.bridgeDir;
+  
+        const bridgePatchArg = (opts.bridgePatchPath && opts.bridgeDir) ? ["--patch", opts.bridgePatchPath] : [];
   
         if (target.useCmd) {
           // 用户手填的 .cmd 且无法推导入口：交给 cmd.exe 执行（对参数做引号处理）
-          const cmdLine = [target.cmdName, "--profile", "headless", ...livePatchArg.map(quoteForCmd), ...extraTokens.map(quoteForCmd), quoteForCmd(task)].join(" ");
+          const cmdLine = [target.cmdName, "--profile", "headless", ...livePatchArg.map(quoteForCmd), ...bridgePatchArg.map(quoteForCmd), ...extraTokens.map(quoteForCmd), quoteForCmd(task)].join(" ");
           child = spawn("cmd.exe", ["/c", cmdLine], { cwd, env, windowsHide: true });
         } else {
-          const args = [...target.argsPrefix, "--profile", "headless", ...livePatchArg, ...extraTokens, task];
+          const args = [...target.argsPrefix, "--profile", "headless", ...livePatchArg, ...bridgePatchArg, ...extraTokens, task];
           child = spawn(target.command, args, { cwd, env, windowsHide: true });
         }
       } catch (err) {
@@ -646,6 +651,7 @@ const DEFAULT_SETTINGS = {
   autoAttachNote: true,
   enterToSend: true,
   showThinking: true, // 实时显示思考过程（推理文本 + 工具调用）
+  askUserBox: true,   // DSH 需要选择时弹出「选择框」供你点击（默认开）
 };
 
 const BUILTIN_PROMPT = [
@@ -726,9 +732,12 @@ class DSHPlugin extends Plugin {
     });
 
     this.addSettingTab(new DSHSettingsTab(this.app, this));
+
+    this.startAskWatcher();
   }
 
   onunload() {
+    this.stopAskWatcher();
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
   }
 
@@ -812,6 +821,99 @@ class DSHPlugin extends Plugin {
       const v2 = this.getChatView();
       if (v2) v2.loadSession(s);
     }
+  }
+
+  /* ---------- 用户问答桥（DSH 提问时弹出选择框） ---------- */
+
+  askBridgeDir() {
+    return path.join(this.runtimeHomePath(), "ask-bridge");
+  }
+
+  askBridgePatchPath() {
+    return path.join(this.runtimeHomePath(), "ask-bridge.patch.yml");
+  }
+
+  /**
+   * 生成提问桥的 --patch 文件（注入桥 provider + ask-user 工具）并确保桥目录存在。
+   * 返回 { patch, dir }；禁用或失败时返回空串（提问能力降级为纯文本）。
+   */
+  prepareAskBridge() {
+    try {
+      if (!this.settings.askUserBox) return { patch: "", dir: "" };
+      const fs = require("fs");
+      const patchPath = this.askBridgePatchPath();
+      const dir = this.askBridgeDir();
+      fs.mkdirSync(dir, { recursive: true });
+      const pluginDir = this.pluginDir();
+      const bridgeFile = path.join(pluginDir, "ask-bridge.cjs");
+      if (!fs.existsSync(bridgeFile)) return { patch: "", dir: "" }; // 未随插件安装：降级
+      const fileUrl = "file:///" + bridgeFile.replace(/\\/g, "/");
+      const patch = [
+        "- insert:",
+        "    - id: ask-bridge-provider",
+        "      name: " + fileUrl,
+        "- insert:",
+        "    - id: tool-ask-user",
+        "      name: '@deepseek-ai/dsh-tool-ask-user'",
+        "",
+      ].join("\n");
+      fs.writeFileSync(patchPath, patch, "utf8");
+      return { patch: patchPath, dir };
+    } catch (e) {
+      this.logError("prepareAskBridge", e);
+      return { patch: "", dir: "" };
+    }
+  }
+
+  /** 常驻轮询：发现桥目录里的提问 JSON → 弹出选择框 */
+  startAskWatcher() {
+    if (this._askTimer) return;
+    if (typeof setInterval === "undefined") return;
+    this._askTimer = setInterval(() => this.pollAskBridge(), 400);
+  }
+
+  stopAskWatcher() {
+    if (this._askTimer) { clearInterval(this._askTimer); this._askTimer = null; }
+  }
+
+  pollAskBridge() {
+    if (this._askModalOpen) return;
+    const dir = this.askBridgeDir();
+    const qf = path.join(dir, "question.json");
+    const fs = require("fs");
+    if (!fs.existsSync(qf)) return;
+    try {
+      // 原子认领：重命名，避免与 provider 的清理竞争
+      const af = path.join(dir, "question.active.json");
+      fs.renameSync(qf, af);
+      const data = JSON.parse(fs.readFileSync(af, "utf8"));
+      const id = data.id;
+      const questions = Array.isArray(data.questions) ? data.questions : [];
+      if (!questions.length) { try { fs.unlinkSync(af); } catch (e) { /* ignore */ } return; }
+      this._askModalOpen = true;
+      const modal = new DSHAskQuestionModal(this.app, questions, (answers, customText) => {
+        // 组装规范回答 { answers: [{ id, selected:[] , custom? }] }
+        const answer = {
+          answers: questions.map((q) => {
+            const sel = answers[q.id] || [];
+            const custom = String(customText[q.id] || "").trim();
+            if (q.multi_select) {
+              const o = { id: q.id, selected: sel };
+              if (custom) o.custom = custom;
+              return o;
+            }
+            if (custom) return { id: q.id, custom };
+            return { id: q.id, selected: sel };
+          }),
+        };
+        try {
+          fs.writeFileSync(path.join(dir, "answer-" + id + ".json"), JSON.stringify(answer), "utf8");
+        } catch (e) { this.logError("ask-bridge-answer", e); }
+        try { fs.unlinkSync(af); } catch (e) { /* ignore */ }
+        this._askModalOpen = false;
+      });
+      modal.open();
+    } catch (e) { /* ignore */ }
   }
 
   vaultBasePath() {
@@ -1845,6 +1947,9 @@ class DSHChatView extends ItemView {
         this.startStatusTimer(run);
       }
 
+      // 提问桥：DSH 需要选择时弹出选择框（每次生成 patch，注入 ask_user_question 工具）
+      const bridge = this.plugin.prepareAskBridge();
+
       const res = await provider.runHeadless({
         cwd: this.plugin.vaultBasePath(),
         task: taskText,
@@ -1857,6 +1962,8 @@ class DSHChatView extends ItemView {
         cancelToken: run.cancelToken,
         live: !!run.live,
         onEvent: (ev) => this.handleLiveEvent(session, run, ev),
+        bridgePatchPath: bridge.patch,
+        bridgeDir: bridge.dir,
       });
 
       if (this.disposed) return;
@@ -2332,6 +2439,14 @@ class DSHSettingsTab extends PluginSettingTab {
         await this.plugin.saveSettings();
       }));
 
+    new Setting(containerEl)
+      .setName("提问选择框")
+      .setDesc("DSH 需要你选择/确认时，弹出带选项的选择框（而非只有纯文字）。需要电脑上装的 DSH 支持 ask_user_question 工具。")
+      .addToggle((t) => t.setValue(this.plugin.settings.askUserBox !== false).onChange(async (v) => {
+        this.plugin.settings.askUserBox = v;
+        await this.plugin.saveSettings();
+      }));
+
     this.maybeAutoDiscover();
   }
 
@@ -2454,6 +2569,92 @@ class DSHSessionHistoryModal extends Modal {
   }
 
   onClose() {
+    this.contentEl.empty();
+  }
+}
+
+/* ============================ DSH 提问选择框 ============================ */
+
+class DSHAskQuestionModal extends Modal {
+  /**
+   * @param {App} app
+   * @param {Array<{id:string,question:string,header?:string,options?:Array<{label:string,description?:string}>,multi_select?:boolean}>} questions
+   * @param {(answers:Object<string,string[]>, customText:Object<string,string>)=>void} onDone
+   */
+  constructor(app, questions, onDone) {
+    super(app);
+    this.questions = questions;
+    this.onDone = onDone;
+    this.selections = {}; // id -> Set<label>
+    this.customText = {}; // id -> string
+    this.submitted = false;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("dsh-ask-modal");
+    contentEl.createEl("h2", { text: "DSH 询问" });
+    for (const q of this.questions) {
+      const block = contentEl.createDiv({ cls: "dsh-ask-block" });
+      const qh = q.header ? q.header : (this.questions.length > 1 ? "问题" : "请选择");
+      block.createEl("h3", { text: qh });
+      block.createEl("div", { cls: "dsh-ask-question", text: q.question });
+      if (Array.isArray(q.options) && q.options.length) {
+        const wrap = block.createDiv({ cls: "dsh-ask-options" });
+        for (const opt of q.options) {
+          const btn = wrap.createEl("button", { cls: "dsh-ask-option", attr: { type: "button" } });
+          btn.createSpan({ cls: "dsh-ask-option-label", text: opt.label });
+          if (opt.description) btn.createSpan({ cls: "dsh-ask-option-desc", text: opt.description });
+          btn.addEventListener("click", () => this.toggleOption(q, btn, opt.label));
+        }
+      } else {
+        block.createDiv({ cls: "dsh-ask-question-hint", text: "（DSH 未提供选项，可自由填写）" });
+      }
+      const inp = block.createEl("input", { cls: "dsh-ask-custom", attr: { placeholder: q.multi_select ? "补充说明（可选）…" : "或自由填写回答…", type: "text" } });
+      const qid = q.id;
+      inp.addEventListener("input", () => { this.customText[qid] = inp.value; });
+      // 单选提示
+      if (!q.multi_select && Array.isArray(q.options) && q.options.length > 1) {
+        block.createDiv({ cls: "dsh-ask-note", text: "点击选项即可选择（再次点击取消）" });
+      }
+    }
+    const actions = contentEl.createDiv({ cls: "dsh-ask-actions" });
+    const ok = actions.createEl("button", { cls: "mod-cta", text: "确定" });
+    ok.addEventListener("click", () => this.submit());
+  }
+
+  toggleOption(q, btn, label) {
+    if (q.multi_select) {
+      let set = this.selections[q.id] || (this.selections[q.id] = new Set());
+      if (set.has(label)) { set.delete(label); btn.classList.remove("is-selected"); }
+      else { set.add(label); btn.classList.add("is-selected"); }
+    } else {
+      const wrap = btn.parentElement;
+      if (wrap && wrap.children) {
+        for (const b of wrap.children) b.classList.remove("is-selected");
+      }
+      this.selections[q.id] = new Set([label]);
+      btn.classList.add("is-selected");
+    }
+  }
+
+  submit() {
+    if (this.submitted) return;
+    this.submitted = true;
+    const answers = {};
+    for (const q of this.questions) answers[q.id] = Array.from(this.selections[q.id] || []);
+    this.onDone(answers, this.customText);
+    this.close();
+  }
+
+  onClose() {
+    if (!this.submitted) {
+      // 用户关闭/ESC：视为未选择
+      const answers = {};
+      for (const q of this.questions) answers[q.id] = [];
+      this.onDone(answers, {});
+    }
     this.contentEl.empty();
   }
 }

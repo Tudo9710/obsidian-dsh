@@ -57,7 +57,7 @@ function main() {
   console.log("已生成:", OUT, "(", out.length, "bytes )");
 
   // 同步到仓库根目录，满足社区目录要求（manifest.json 必须在仓库默认分支根目录）
-  for (const name of ["main.js", "manifest.json", "styles.css"]) {
+  for (const name of ["main.js", "manifest.json", "styles.css", "ask-bridge.cjs"]) {
     const src = path.join(PLUGIN_DIR, name);
     const dst = path.join(ROOT, name);
     if (fs.existsSync(src)) {
