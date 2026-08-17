@@ -22,6 +22,7 @@ const TEMPLATE = path.join(PLUGIN_DIR, "main.template.js");
 const OUT = path.join(PLUGIN_DIR, "main.js");
 
 const MARKER = "/*__INLINE_PROVIDER__*/";
+const ASK_BRIDGE_MARKER = "/*__ASK_BRIDGE_SOURCE__*/";
 
 function main() {
   let providerSrc = fs.readFileSync(PROVIDER, "utf8");
@@ -52,7 +53,19 @@ function main() {
     console.error("模板中未找到占位标记，中止。");
     process.exit(1);
   }
-  const out = template.replace(MARKER, iife);
+  // 注意：必须用「函数式替换」，否则替换串里的 $& 会被 String.replace 解释成匹配文本，
+  // 破坏 provider 源码中的 "\$&"（曾导致 parseYamlSection 的正则被污染）。
+  let out = template.replace(MARKER, () => iife);
+
+  // 内嵌 ask-bridge.cjs（提问框运行时写到临时目录引用，避免依赖插件目录定位）
+  const askSrc = fs.readFileSync(path.join(PLUGIN_DIR, "ask-bridge.cjs"), "utf8");
+  const askJson = JSON.stringify(askSrc);
+  if (!out.includes(ASK_BRIDGE_MARKER)) {
+    console.error("模板中未找到 ask-bridge 占位标记，中止。");
+    process.exit(1);
+  }
+  out = out.replace(ASK_BRIDGE_MARKER, () => askJson);
+
   fs.writeFileSync(OUT, out, "utf8");
   console.log("已生成:", OUT, "(", out.length, "bytes )");
 

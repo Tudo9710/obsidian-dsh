@@ -16,10 +16,18 @@ const { Plugin, PluginSettingTab, ItemView, MarkdownView, MarkdownRenderer, Noti
 const path = require("path");
 /*__INLINE_PROVIDER__*/
 
+/** ask-bridge.cjs 源码由构建脚本内嵌（提问框运行时写到临时目录引用，不依赖插件目录定位） */
+const ASK_BRIDGE_SOURCE = /*__ASK_BRIDGE_SOURCE__*/;
+
 const VIEW_TYPE = "dsh-chat-view";
 const SESSION_MANAGER_VIEW = "dsh-session-manager-view";
 const DATA_SUBDIR = [".dsh", "sessions"];
 const MAX_TRANSCRIPT_TURNS = 20;
+
+/** 判断问题是否多选：DSH 工具用驼峰 multiSelect，兼容小写下划线 multi_select */
+function isMultiQuestion(q) {
+  return !!((q && (q.multiSelect || q.multi_select)) || (q && q.multi_select === true));
+}
 
 const EFFORT_OPTS = [
   { value: "off", label: "关闭" },
@@ -103,6 +111,11 @@ class DSHPlugin extends Plugin {
       name: "打开 DSH 会话管理器",
       callback: () => this.activateSessionManager(),
     });
+    this.addCommand({
+      id: "test-dsh-ask-box",
+      name: "测试 DSH 提问选择框",
+      callback: () => this.testAskBox(),
+    });
 
     /* 代码块内嵌聊天：```agent-client ``` 在笔记里直接对话（参考 agent-client 的嵌入块） */
     this.registerMarkdownCodeBlockProcessor("agent-client", (source, el, ctx) => {
@@ -140,11 +153,22 @@ class DSHPlugin extends Plugin {
 
   pluginDir() {
     try {
+      // 构建后 main.js 所在的目录 = 插件目录（_ 最可靠，__dirname 在 Obsidian 中即插件安装目录）
+      if (typeof __dirname === "string" && __dirname) return __dirname;
       if (this.manifest && this.manifest.dir) return this.manifest.dir;
       const base = this.vaultBasePath();
       if (base) return path.join(base, ".obsidian", "plugins", this.manifest && this.manifest.id || "dsh");
     } catch (e) { /* ignore */ }
     return "";
+  }
+
+  /** 插件目录下的文件是否就绪（如 ask-bridge.cjs） */
+  hasPluginFile(name) {
+    try {
+      const dir = this.pluginDir();
+      if (!dir) return false;
+      return require("fs").existsSync(path.join(dir, name));
+    } catch (e) { return false; }
   }
 
   logError(tag, err) {
@@ -230,18 +254,22 @@ class DSHPlugin extends Plugin {
 
   /**
    * 生成提问桥的 --patch 文件（注入桥 provider + ask-user 工具）并确保桥目录存在。
-   * 返回 { patch, dir }；禁用或失败时返回空串（提问能力降级为纯文本）。
+   * 返回 { patch, dir, file }；禁用或失败时返回 { patch:"", dir:"" }（提问能力降级为纯文本）。
    */
   prepareAskBridge() {
     try {
-      if (!this.settings.askUserBox) return { patch: "", dir: "" };
+      if (!this.settings.askUserBox) return { patch: "", dir: "", file: "" };
       const fs = require("fs");
-      const patchPath = this.askBridgePatchPath();
-      const dir = this.askBridgeDir();
+      const rt = this.runtimeHomePath();
+      fs.mkdirSync(rt, { recursive: true });
+      const dir = path.join(rt, "ask-bridge");
       fs.mkdirSync(dir, { recursive: true });
-      const pluginDir = this.pluginDir();
-      const bridgeFile = path.join(pluginDir, "ask-bridge.cjs");
-      if (!fs.existsSync(bridgeFile)) return { patch: "", dir: "" }; // 未随插件安装：降级
+      // 桥插件源码：优先用内嵌版本（免插件目录依赖），写进临时目录
+      const bridgeFile = path.join(rt, "ask-bridge.cjs");
+      const src = (typeof ASK_BRIDGE_SOURCE === "string" && ASK_BRIDGE_SOURCE) || "";
+      if (!src) return { patch: "", dir: "", file: "" }; // 未编译内嵌：降级
+      fs.writeFileSync(bridgeFile, src, "utf8");
+      const patchPath = path.join(rt, "ask-bridge.patch.yml");
       const fileUrl = "file:///" + bridgeFile.replace(/\\/g, "/");
       const patch = [
         "- insert:",
@@ -253,10 +281,44 @@ class DSHPlugin extends Plugin {
         "",
       ].join("\n");
       fs.writeFileSync(patchPath, patch, "utf8");
-      return { patch: patchPath, dir };
+      return { patch: patchPath, dir, file: bridgeFile };
     } catch (e) {
       this.logError("prepareAskBridge", e);
-      return { patch: "", dir: "" };
+      return { patch: "", dir: "", file: "" };
+    }
+  }
+
+  /** 一键自测提问框：生成桥 → 跑一段会提问的 headless → 应在弹窗中选择 */
+  async testAskBox() {
+    try {
+      if (!this.settings.askUserBox) { new Notice("提问框未启用：请到 设置 → 界面 打开「提问选择框」", 6000); return; }
+      const bridge = this.prepareAskBridge();
+      if (!bridge.patch || !bridge.dir) {
+        new Notice("提问桥未就绪：AskUserBox 开启=" + !!this.settings.askUserBox + "，patch 写入失败（内嵌源码缺失或临时目录不可写）。请查看 error.log", 8000);
+        return;
+      }
+      new Notice("提问桥已注入：" + bridge.file + "\n正在跑测试任务…请在弹窗中选择「好」/「不好」", 8000);
+      const homeRes = await this.applyAgentSelection(
+        this.settings.defaultModel || "deepseek-v4-flash",
+        this.settings.defaultEffort || "high",
+        (this.settings.modelProviders && this.settings.modelProviders[this.settings.defaultModel]) || this.settings.defaultProvider
+      );
+      if (!homeRes.ok) { new Notice("runtime home 准备失败：" + (homeRes.error || ""), 6000); return; }
+      const res = await provider.runHeadless({
+        cwd: this.vaultBasePath(),
+        task: "用 ask_user_question 工具向我提问：提问框测试，请选择。必须给出 好 / 不好 两个选项，然后等待我的回答。",
+        dshHome: homeRes.home,
+        permissionMode: this.settings.permissionMode,
+        timeoutMs: 60000,
+        bridgePatchPath: bridge.patch,
+        bridgeDir: bridge.dir,
+      });
+      const detail = ((res.stdout || "") + " " + (res.stderr || "")).trim().slice(0, 160);
+      if (res.ok && detail) new Notice("提问框测试完成：" + detail, 8000);
+      else new Notice("提问框测试未完成" + (detail ? "：" + detail : "（60 秒无回答/失败）"), 8000);
+    } catch (e) {
+      this.logError("testAskBox", e);
+      new Notice("提问框测试异常：" + String((e && e.message) || e), 7000);
     }
   }
 
@@ -285,20 +347,26 @@ class DSHPlugin extends Plugin {
       const id = data.id;
       const questions = Array.isArray(data.questions) ? data.questions : [];
       if (!questions.length) { try { fs.unlinkSync(af); } catch (e) { /* ignore */ } return; }
+      this.logError("ask-bridge", "捕获到 DSH 提问：" + JSON.stringify(questions.map((q) => ({ id: q.id, question: q.question, options: (q.options || []).map((o) => o.label) }))));
       this._askModalOpen = true;
-      const modal = new DSHAskQuestionModal(this.app, questions, (answers, customText) => {
-        // 组装规范回答 { answers: [{ id, selected:[] , custom? }] }
+      // 找到活跃聊天视图，在输入框上方显示问询条
+      let view = null;
+      try {
+        const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+        const activeLeaf = this.app.workspace.activeLeaf;
+        const active = (activeLeaf && activeLeaf.view) ? activeLeaf.view : (leaves[0] || {}).view;
+        if (active && typeof active.renderAskBar === "function") view = active;
+        else if (leaves.length) view = leaves[0].view;
+      } catch (e) { /* ignore */ }
+      const finishAsk = (answers, customText) => {
+        // 规范回答：每个 answer 必须带 selected 数组（即便为空）；自定义文本作为附加字段
         const answer = {
           answers: questions.map((q) => {
-            const sel = answers[q.id] || [];
+            const sel = Array.isArray(answers[q.id]) ? answers[q.id] : [];
             const custom = String(customText[q.id] || "").trim();
-            if (q.multi_select) {
-              const o = { id: q.id, selected: sel };
-              if (custom) o.custom = custom;
-              return o;
-            }
-            if (custom) return { id: q.id, custom };
-            return { id: q.id, selected: sel };
+            const o = { id: q.id, selected: sel };
+            if (custom) o.custom = custom;
+            return o;
           }),
         };
         try {
@@ -306,8 +374,14 @@ class DSHPlugin extends Plugin {
         } catch (e) { this.logError("ask-bridge-answer", e); }
         try { fs.unlinkSync(af); } catch (e) { /* ignore */ }
         this._askModalOpen = false;
-      });
-      modal.open();
+      };
+      if (view) {
+        view.renderAskBar({ id, questions }, finishAsk);
+      } else {
+        // 兜底：没有聊天视图时用居中弹窗
+        const modal = new DSHAskQuestionModal(this.app, questions, finishAsk);
+        modal.open();
+      }
     } catch (e) { /* ignore */ }
   }
 
@@ -589,6 +663,9 @@ class DSHChatView extends ItemView {
 
     /* 排队提示条 */
     this.queueEl = container.createDiv({ cls: "dsh-queue dsh-hidden" });
+
+    /* DSH 提问条：紧贴输入框上方（答完自动消失） */
+    this.askBarEl = container.createDiv({ cls: "dsh-ask-bar dsh-hidden" });
 
     /* 输入区：文本框 + 底部工具栏（模型/强度/权限 + 发送/停止） */
     const inputContainer = container.createDiv({ cls: "agent-client-chat-input-container" });
@@ -1294,6 +1371,103 @@ class DSHChatView extends ItemView {
     }
   }
 
+  /* ---------- DSH 提问条（紧贴输入框上方） ---------- */
+
+  /**
+   * 在输入框上方渲染 DSH 的问询条（问题 + 选项按钮 + 自由填写 + 提交）。
+   * @param {{id:string, questions:Array}} data 桥文件里的提问数据
+   * @param {(answers:Object, customText:Object)=>void} onDone 用户提交后回调
+   */
+  renderAskBar(data, onDone) {
+    if (!this.askBarEl || this.disposed) return;
+    this.clearAskBar();
+    const questions = Array.isArray(data.questions) ? data.questions : [];
+    if (!questions.length) return;
+    this.askState = { id: data.id, questions, selections: {}, custom: {}, onDone };
+    const el = this.askBarEl;
+    el.empty();
+    el.removeClass("dsh-hidden");
+    const head = el.createDiv({ cls: "dsh-ask-bar-head" });
+    head.createSpan({ cls: "dsh-ask-bar-title", text: "🧠 DSH 正在询问" });
+    for (const q of questions) {
+      const block = el.createDiv({ cls: "dsh-ask-bar-block" });
+      const qh = q.header ? q.header : "请选择";
+      block.createDiv({ cls: "dsh-ask-bar-question-head", text: qh });
+      block.createDiv({ cls: "dsh-ask-bar-question", text: q.question });
+      if (Array.isArray(q.options) && q.options.length) {
+        const multi = isMultiQuestion(q);
+        const opts = block.createDiv({ cls: "dsh-ask-bar-options" });
+        for (const opt of q.options) {
+          const btn = opts.createEl("button", { cls: "dsh-ask-bar-option" + (multi ? " is-multi" : ""), attr: { type: "button" } });
+          btn.createSpan({ cls: "dsh-ask-bar-option-marker" });
+          btn.createSpan({ cls: "dsh-ask-bar-option-label", text: opt.label });
+          if (opt.description) btn.createSpan({ cls: "dsh-ask-bar-option-desc", text: opt.description });
+          btn.addEventListener("click", () => {
+            btn.classList.toggle("is-selected");
+            // 单选：清掉其它（多选保留多个选中）
+            if (!multi) { for (const b of opts.children) if (b !== btn) b.classList.remove("is-selected"); }
+          });
+        }
+        if (multi) block.createDiv({ cls: "dsh-ask-bar-note", text: "可多选（点击多个选项）" });
+      }
+      const inp = block.createEl("input", { cls: "dsh-ask-bar-custom", attr: { placeholder: isMultiQuestion(q) ? "补充说明（可选）…" : "或自由填写…", type: "text" } });
+      const qid = q.id;
+      inp.addEventListener("input", () => { this.askState.custom[qid] = inp.value; });
+    }
+    const actions = el.createDiv({ cls: "dsh-ask-bar-actions" });
+    const submit = actions.createEl("button", { cls: "mod-cta", text: "提交" });
+    submit.addEventListener("click", () => {
+      const state = this.askState;
+      if (!state || !el) return;
+      const blocks = Array.from(el.children).filter((c) => c.classList && c.classList.contains("dsh-ask-bar-block"));
+      const answers = {};
+      state.questions.forEach((q, i) => {
+        const block = blocks[i] || null;
+        const sel = [];
+        if (block && block.querySelectorAll) {
+          for (const b of block.querySelectorAll(".dsh-ask-bar-option")) {
+            if (b.classList.contains("is-selected")) {
+              const lab = b.querySelector(".dsh-ask-bar-option-label");
+              sel.push(lab && lab.textContent != null ? lab.textContent : String(b.textContent || ""));
+            }
+          }
+        }
+        answers[q.id] = sel;
+      });
+      const cb = state.onDone;
+      this.clearAskBar();
+      if (cb) cb(answers, state.custom);
+    });
+    // 取消 = 取消本次对话（停止 DSH 运行），不只关闭提问框
+    const cancel = actions.createEl("button", { cls: "dsh-ask-bar-cancel", text: "取消" });
+    cancel.addEventListener("click", () => {
+      const state = this.askState;
+      if (!state) return;
+      // 1) 取消当前对话的运行（runOne 会落一条「（已取消）」）
+      try { this.cancel(); } catch (e) { /* ignore */ }
+      // 2) 清空问询条
+      const cb = state.onDone;
+      this.clearAskBar();
+      // 3) 用空选择回传（释放插件轮询标记 + 清理认领的问题文件）
+      const empty = {};
+      const emptyText = {};
+      state.questions.forEach((q) => { empty[q.id] = []; emptyText[q.id] = ""; });
+      if (cb) cb(empty, emptyText);
+      try { new Notice("已取消本次对话", 3000); } catch (e) { /* ignore */ }
+    });
+    // ESC 取消
+    for (const inp of el.querySelectorAll("input")) {
+      inp.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); cancel.click(); } });
+    }
+    // 自动聚焦第一个输入/选项
+    try { const first = el.querySelector(".dsh-ask-bar-option, input"); if (first) first.focus(); } catch (e) { /* ignore */ }
+  }
+
+  clearAskBar() {
+    if (this.askBarEl) { this.askBarEl.empty(); this.askBarEl.addClass("dsh-hidden"); }
+    this.askState = null;
+  }
+
   async runOne(session, query) {
     const run = this.getRun(session.id);
     run.sessionId = session.id;
@@ -1876,7 +2050,7 @@ class DSHSettingsTab extends PluginSettingTab {
         // 就地刷新模型输入框与默认模型下拉，不重建整个设置页
         try {
           if (this._modelsInput) this._modelsInput.setValue(r.models.map((m) => m.id).join(", "));
-          if (this._defaultModelDd) {
+          if (this._defaultModelDd && this._defaultModelDd.selectEl) {
             this._defaultModelDd.selectEl.empty();
             const ids = r.models.map((m) => m.id);
             const cur = this.plugin.settings.defaultModel || r.defaultModel || "deepseek-v4-flash";
@@ -2006,11 +2180,11 @@ class DSHAskQuestionModal extends Modal {
       } else {
         block.createDiv({ cls: "dsh-ask-question-hint", text: "（DSH 未提供选项，可自由填写）" });
       }
-      const inp = block.createEl("input", { cls: "dsh-ask-custom", attr: { placeholder: q.multi_select ? "补充说明（可选）…" : "或自由填写回答…", type: "text" } });
+      const inp = block.createEl("input", { cls: "dsh-ask-custom", attr: { placeholder: isMultiQuestion(q) ? "补充说明（可选）…" : "或自由填写回答…", type: "text" } });
       const qid = q.id;
       inp.addEventListener("input", () => { this.customText[qid] = inp.value; });
       // 单选提示
-      if (!q.multi_select && Array.isArray(q.options) && q.options.length > 1) {
+      if (!isMultiQuestion(q) && Array.isArray(q.options) && q.options.length > 1) {
         block.createDiv({ cls: "dsh-ask-note", text: "点击选项即可选择（再次点击取消）" });
       }
     }
@@ -2020,7 +2194,7 @@ class DSHAskQuestionModal extends Modal {
   }
 
   toggleOption(q, btn, label) {
-    if (q.multi_select) {
+    if (isMultiQuestion(q)) {
       let set = this.selections[q.id] || (this.selections[q.id] = new Set());
       if (set.has(label)) { set.delete(label); btn.classList.remove("is-selected"); }
       else { set.add(label); btn.classList.add("is-selected"); }

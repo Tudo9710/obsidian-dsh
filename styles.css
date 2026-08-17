@@ -2422,3 +2422,121 @@ If your plugin does not need CSS, delete this file.
 .dsh-ask-custom { width: 100%; box-sizing: border-box; margin-bottom: 6px; }
 .dsh-ask-note { font-size: var(--font-smallest); color: var(--text-faint); margin-bottom: 4px; }
 .dsh-ask-actions { display: flex; justify-content: flex-end; }
+
+/* ---- DSH 提问条：紧贴输入框上方（hermes/DSH 风格的内嵌选择） ---- */
+.dsh-ask-bar {
+	flex-shrink: 0;
+	margin: 0 8px 8px;
+	padding: 10px 12px;
+	background: var(--background-primary);
+	border: 1px solid var(--interactive-accent);
+	border-radius: 8px;
+	box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+.dsh-ask-bar-head {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	margin-bottom: 6px;
+}
+.dsh-ask-bar-title {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	color: var(--interactive-accent);
+}
+.dsh-ask-bar-block { margin-bottom: 8px; }
+.dsh-ask-bar-block:last-of-type { margin-bottom: 2px; }
+.dsh-ask-bar-question-head {
+	font-size: var(--font-ui-small);
+	font-weight: var(--font-semibold);
+	color: var(--text-normal);
+	margin-bottom: 2px;
+}
+.dsh-ask-bar-question {
+	font-size: var(--font-text-size);
+	color: var(--text-muted);
+	white-space: pre-wrap;
+	word-break: break-word;
+	margin-bottom: 6px;
+}
+.dsh-ask-bar-options {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	margin-bottom: 8px;
+}
+/* 选项 = 扁平列表行（非按钮形状）：前缀指示圈/方块 + 文本 */
+.dsh-ask-bar-option {
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+	width: 100%;
+	padding: 5px 8px;
+	background: transparent;
+	border: none;
+	border-radius: 6px;
+	color: var(--text-normal);
+	font-size: var(--font-text-size);
+	text-align: left;
+	cursor: pointer;
+	box-shadow: none;
+	appearance: none;
+}
+.dsh-ask-bar-option:hover { background: var(--background-modifier-hover); }
+.dsh-ask-bar-option.is-selected { background: var(--background-modifier-hover); }
+.dsh-ask-bar-option-marker {
+	flex-shrink: 0;
+	width: 14px;
+	height: 14px;
+	margin-top: 3px;
+	box-sizing: border-box;
+	border: 1.5px solid var(--text-muted);
+	border-radius: 50%;
+	position: relative;
+}
+.dsh-ask-bar-option.is-selected .dsh-ask-bar-option-marker {
+	border-color: var(--interactive-accent);
+}
+.dsh-ask-bar-option.is-selected .dsh-ask-bar-option-marker::after {
+	content: "";
+	position: absolute;
+	inset: 2px;
+	background: var(--interactive-accent);
+	border-radius: 50%;
+}
+/* 多选：方块勾选样式 */
+.dsh-ask-bar-option.is-multi .dsh-ask-bar-option-marker { border-radius: 4px; }
+.dsh-ask-bar-option.is-multi.is-selected .dsh-ask-bar-option-marker::after { border-radius: 2px; }
+.dsh-ask-bar-option-label { flex: 1; min-width: 0; word-break: break-word; line-height: 1.35; }
+.dsh-ask-bar-option-desc {
+	display: block;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-muted);
+	margin-top: 2px;
+	white-space: pre-wrap;
+	word-break: break-word;
+}
+.dsh-ask-bar-custom {
+	width: 100%;
+	box-sizing: border-box;
+	font-size: var(--font-ui-small);
+	margin-bottom: 2px;
+}
+.dsh-ask-bar-actions {
+	display: flex;
+	justify-content: flex-end;
+}
+
+.dsh-ask-bar-note { font-size: var(--font-smallest); color: var(--text-faint); margin-bottom: 4px; }
+
+.dsh-ask-bar-cancel {
+	padding: 4px 14px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	background: transparent;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	cursor: pointer;
+	margin-right: 8px;
+}
+.dsh-ask-bar-cancel:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
