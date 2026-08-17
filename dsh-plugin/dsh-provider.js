@@ -388,13 +388,79 @@ function parseYamlSection(yamlText, sectionName) {
 }
 
 /**
+ * 扫描 settings.yaml 里所有 llm-* 段的模型目录（支持嵌套 providers）：
+ *   - 平铺：llm-deepseek.models: [ - id: x, name: y ]
+ *   - 嵌套：llm-pi-ai.providers.<route>.models: [ - id: x, name: y ]
+ * 每条模型记录 provider 字段 = 运行时要写入 agent-default-model.provider 的路由
+ * （嵌套结构取 provider 键名，如 opencode-go；平铺结构取段内 provider 子键或默认）。
+ * @param {string} yamlText
+ * @returns {Array<{id:string,name:string,provider:string}>}
+ */
+function scanModelCatalog(yamlText) {
+  const lines = String(yamlText || "").split(/\r?\n/);
+  const models = [];
+  let section = null;
+  let provider = null;
+  let inModelsList = false;
+  let inProvidersMap = false;
+  let modelItem = null;
+
+  const flush = () => {
+    if (modelItem && modelItem.id) {
+      models.push({
+        id: modelItem.id,
+        name: modelItem.name || modelItem.id,
+        provider: modelItem.provider || provider || DEFAULT_MODEL_PROVIDER,
+      });
+    }
+    modelItem = null;
+  };
+
+  for (const raw of lines) {
+    const line = raw.replace(/\r$/, "");
+    if (!line.trim()) continue;
+    const mTop = line.match(/^([A-Za-z0-9_-]+)\s*:/);
+    if (!/^\s/.test(line)) {
+      flush();
+      section = (mTop && mTop[1].startsWith("llm-")) ? mTop[1] : null;
+      provider = null; inModelsList = false; inProvidersMap = false;
+      continue;
+    }
+    if (!section) continue;
+    const itemLine = line.match(/^\s*-\s*id\s*:\s*(.+)$/);
+    const kv = line.match(/^(\s*)([A-Za-z0-9_.-]+)\s*:\s*(.*)$/);
+    if (itemLine && inModelsList) {
+      flush();
+      modelItem = { id: itemLine[1].trim().replace(/^['"]|['"]$/g, ""), name: null };
+      continue;
+    }
+    if (!kv) continue;
+    const key = kv[2];
+    const val = kv[3].trim().replace(/^['"]|['"]$/g, "");
+    const keyInd = kv[1].length;
+    if (key === "providers") { flush(); inProvidersMap = true; inModelsList = false; continue; }
+    if (key === "models") { flush(); inModelsList = true; continue; }
+    if (modelItem) {
+      if (key === "name") modelItem.name = val;
+      else if (key === "provider") modelItem.provider = val;
+      continue;
+    }
+    if (!val && inProvidersMap && keyInd >= 4) { provider = key; inModelsList = false; continue; }
+    if (!val && keyInd <= 2) { inProvidersMap = false; continue; }
+    if (val && key === "provider") { provider = val; }
+  }
+  flush();
+  return models;
+}
+
+/**
  * 扫描本机 dsh 配置，得到可用模型目录与默认选择（「一键自动配置」的数据源）。
- * 模型来源：真实 DSH_HOME/settings.yaml 的 llm-deepseek.models（若配置），
- * 否则用 dsh-llm-deepseek 的默认（V4 Flash + V4 Pro）。
+ * 模型来源：真实 DSH_HOME/settings.yaml 里所有 llm-* 段的 models
+ * （llm-deepseek 平铺，或 llm-pi-ai 等嵌套 providers）；若都为空用默认（V4 Flash + V4 Pro）。
  * 默认模型/思考强度：settings.yaml 的 agent-default-model。
  * @param {object} opts
  * @param {string} opts.baseHome 真实 DSH_HOME
- * @returns {{ok:boolean, baseHome:string, models:Array<{id:string,name:string}>, defaultModel:string, defaultEffort:string, provider:string, credentialOk:boolean, source:string, error?:string}}
+ * @returns {{ok:boolean, baseHome:string, models:Array<{id:string,name:string,provider:string}>, defaultModel:string, defaultEffort:string, provider:string, credentialOk:boolean, source:string, error?:string}}
  */
 function scanModels(opts) {
   try {
@@ -404,27 +470,23 @@ function scanModels(opts) {
     try { if (fs.existsSync(settingsPath)) yaml = fs.readFileSync(settingsPath, "utf8"); } catch (e) { /* ignore */ }
 
     const adm = parseYamlSection(yaml, "agent-default-model").sub;
-    const llm = parseYamlSection(yaml, "llm-deepseek");
     const provider = adm.provider || DEFAULT_MODEL_PROVIDER;
     const defaultModel = adm.model || "deepseek-v4-flash";
     const rawEffort = adm.reasoningEffort;
     const defaultEffort = (rawEffort === "off" || rawEffort === "high" || rawEffort === "max") ? rawEffort : "high";
 
-    let models = [];
-    if (llm.list && llm.list.length > 0) {
-      models = llm.list.map((it) => ({ id: it.id, name: it.name || it.id })).filter((m) => m && m.id);
-    }
+    let models = scanModelCatalog(yaml);
     if (models.length === 0) {
       models = [
-        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash" },
-        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro" },
+        { id: "deepseek-v4-flash", name: "DeepSeek-V4-Flash", provider: DEFAULT_MODEL_PROVIDER },
+        { id: "deepseek-v4-pro", name: "DeepSeek-V4-Pro", provider: DEFAULT_MODEL_PROVIDER },
       ];
     }
 
     let credentialOk = false;
     try {
       const cred = fs.readFileSync(path.join(baseHome, ".credentials.yaml"), "utf8");
-      credentialOk = /DEEPSEEK_API_KEY\s*:\s*\S+/.test(cred);
+      credentialOk = /^\s*[A-Za-z0-9_]+\s*:\s*\S+/m.test(cred); // 任意一个凭据键非空
     } catch (e) { /* ignore */ }
 
     return {
@@ -435,7 +497,7 @@ function scanModels(opts) {
       defaultEffort,
       provider,
       credentialOk,
-      source: llm.list.length ? "settings" : "defaults",
+      source: models.length ? "settings" : "defaults",
     };
   } catch (e) {
     return { ok: false, baseHome: opts.baseHome || "", models: [], defaultModel: "deepseek-v4-flash", defaultEffort: "high", provider: DEFAULT_MODEL_PROVIDER, credentialOk: false, source: "", error: String(e && e.message || e) };
@@ -482,9 +544,9 @@ function writeAgentDefaultModel(yamlText, sel) {
 /**
  * 准备 runtime home：
  *  1. 确保目录存在；
- *  2. 缺 .credentials.yaml 时从 baseHome 复制（凭据跟随真实 home）；
- *  3. 缺 settings.yaml 时从 baseHome 复制一份做基底；
- *  4. 用所选模型/思考强度重写 settings.yaml 的 agent-default-model 段。
+ *  2. 每次都从 baseHome 刷新 .credentials.yaml 与 settings.yaml（用户改配置后
+ *     立即生效，避免 runtime 里的旧拷贝过期）；
+ *  3. 用所选模型/思考强度/路由重写 settings.yaml 的 agent-default-model 段。
  * @param {object} opts
  * @param {string} opts.baseHome 真实 DSH_HOME（默认 ~/.dsh）
  * @param {string} opts.runtimeHome 独立 runtime home 目录
@@ -498,19 +560,19 @@ function prepareRuntimeHome(opts) {
     if (!runtimeHome) return { ok: false, home: "", error: "runtimeHome 未指定" };
     fs.mkdirSync(runtimeHome, { recursive: true });
 
-    // 凭据
+    // 凭据：每次都从 baseHome 刷新
     const credDst = path.join(runtimeHome, ".credentials.yaml");
-    if (!fs.existsSync(credDst)) {
-      const credSrc = path.join(baseHome, ".credentials.yaml");
+    const credSrc = path.join(baseHome, ".credentials.yaml");
+    try {
       if (fs.existsSync(credSrc)) fs.copyFileSync(credSrc, credDst);
-    }
+    } catch (e) { /* ignore */ }
 
-    // settings.yaml 基底
+    // settings.yaml 基底：每次都从 baseHome 刷新（保留用户的 llm-* 等全部配置）
     const settingsPath = path.join(runtimeHome, "settings.yaml");
-    if (!fs.existsSync(settingsPath)) {
-      const src = path.join(baseHome, "settings.yaml");
+    const src = path.join(baseHome, "settings.yaml");
+    try {
       if (fs.existsSync(src)) fs.copyFileSync(src, settingsPath);
-    }
+    } catch (e) { /* ignore */ }
 
     // 重写 agent-default-model 段
     const current = fs.existsSync(settingsPath) ? fs.readFileSync(settingsPath, "utf8") : "";
@@ -542,4 +604,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { runHeadless, resolveSpawnTarget, describeTarget, findDshEntry, resolveNodePath, parseArgsTokens, prepareRuntimeHome, scanModels, parseYamlSection, DEFAULT_MODEL_PROVIDER };
+module.exports = { runHeadless, resolveSpawnTarget, describeTarget, findDshEntry, resolveNodePath, parseArgsTokens, prepareRuntimeHome, scanModels, scanModelCatalog, parseYamlSection, DEFAULT_MODEL_PROVIDER };

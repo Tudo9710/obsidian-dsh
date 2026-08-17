@@ -236,14 +236,18 @@ class DSHPlugin extends Plugin {
   }
 
   /**
-   * 确保 runtime home 存在（凭据 + settings 基底），并按所选模型/思考强度
-   * 重写 settings.yaml 的 agent-default-model 段。返回 { ok, home, error? }。
+   * 确保 runtime home 存在（凭据 + settings 基底），并按所选模型/思考强度/
+   * 路由重写 settings.yaml 的 agent-default-model 段。返回 { ok, home, error? }。
    */
-  async applyAgentSelection(model, effort) {
+  async applyAgentSelection(model, effort, providerRoute) {
     const res = provider.prepareRuntimeHome({
       baseHome: this.baseDshHome(),
       runtimeHome: this.runtimeHomePath(),
-      selection: { provider: "deepseek-official", model, reasoningEffort: effort },
+      selection: {
+        provider: providerRoute || "deepseek-official",
+        model,
+        reasoningEffort: effort,
+      },
     });
     return res;
   }
@@ -254,13 +258,18 @@ class DSHPlugin extends Plugin {
   }
 
   /**
-   * 扫描并把结果写入设置（模型列表 / 默认模型 / 默认思考强度）。
+   * 扫描并把结果写入设置（模型列表 / 模型→路由映射 / 默认模型 / 默认思考强度）。
    * 同时刷新已打开的聊天视图的模型下拉。返回 scan 结果。
    */
   async scanAndApplyModels() {
     const scan = this.scanMachine();
     if (scan.ok) {
       this.settings.models = scan.models.map((m) => m.id).join(", ");
+      // 记录每个模型对应的 provider 路由（如 deepseek-official / opencode-go）
+      const providers = {};
+      for (const m of scan.models) if (m.id && m.provider) providers[m.id] = m.provider;
+      this.settings.modelProviders = providers;
+      this.settings.defaultProvider = scan.provider || "deepseek-official";
       this.settings.defaultModel = scan.defaultModel || this.settings.defaultModel;
       this.settings.defaultEffort = scan.defaultEffort || this.settings.defaultEffort;
       await this.saveSettings();
@@ -741,12 +750,21 @@ class DSHChatView extends ItemView {
 
   modelOptions() {
     const raw = String(this.plugin.settings.models || "deepseek-v4-flash").split(",");
+    const map = this.plugin.settings.modelProviders || {};
     const list = [];
     for (const m of raw) {
       const v = m.trim();
-      if (v) list.push({ value: v, label: v });
+      if (v) list.push({ value: v, label: v, provider: map[v] || "" });
     }
     return list;
+  }
+
+  /** 模型对应的 provider 路由（扫描自 settings.yaml；缺省 deepseek-official） */
+  modelProvider(model) {
+    const map = this.plugin.settings.modelProviders || {};
+    if (map[model]) return map[model];
+    const o = (this.modelOptions() || []).find((x) => x.value === model);
+    return (o && o.provider) || this.plugin.settings.defaultProvider || "deepseek-official";
   }
 
   currentModel() {
@@ -795,8 +813,10 @@ class DSHChatView extends ItemView {
   }
 
   selectionSnapshot() {
+    const model = this.modelBtn ? this.modelBtn.__value : this.currentModel();
     return {
-      model: this.modelBtn ? this.modelBtn.__value : this.currentModel(),
+      model,
+      provider: this.modelProvider(model),
       effort: this.effortBtn ? this.effortBtn.__value : this.currentEffort(),
       permission: this.permBtn ? this.permBtn.__value : this.currentPerm(),
     };
@@ -1047,6 +1067,7 @@ class DSHChatView extends ItemView {
     const session = this.session;
     const snap = this.selectionSnapshot();
     session.model = snap.model;
+    session.provider = snap.provider;
     session.effort = snap.effort;
     session.permission = snap.permission;
     const run = this.getRun(session.id);
@@ -1074,6 +1095,7 @@ class DSHChatView extends ItemView {
     const session = this.session;
     const snap = this.selectionSnapshot();
     session.model = snap.model;
+    session.provider = snap.provider;
     session.effort = snap.effort;
     session.permission = snap.permission;
     const run = this.getRun(session.id);
@@ -1188,16 +1210,18 @@ class DSHChatView extends ItemView {
       // 使用会话自身记录的选择（发送/插话时已固化）；后台会话运行时不读当前活动会话的选择器
       const sel = {
         model: session.model || this.plugin.settings.defaultModel || "deepseek-v4-flash",
+        provider: session.provider || this.modelProvider(session.model || this.plugin.settings.defaultModel),
         effort: session.effort || this.plugin.settings.defaultEffort || "high",
         permission: session.permission || this.plugin.settings.permissionMode || "workspace-write",
       };
       session.model = sel.model;
+      session.provider = sel.provider;
       session.effort = sel.effort;
       session.permission = sel.permission;
       session.lastActivityAt = Date.now();
 
-      // 按所选模型/思考强度准备 runtime home（每次启动重读 settings.yaml）
-      const homeRes = await this.plugin.applyAgentSelection(sel.model, sel.effort);
+      // 按所选模型/思考强度/路由准备 runtime home（每次启动重读 settings.yaml）
+      const homeRes = await this.plugin.applyAgentSelection(sel.model, sel.effort, sel.provider);
       if (!homeRes.ok) {
         session.messages.push({
           role: "error",

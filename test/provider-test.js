@@ -110,7 +110,33 @@ const testTask = process.argv.slice(2).join(" ") ||
   const sc2 = scanModels({ baseHome: emptyHome });
   console.log("空 home 回退:", JSON.stringify(sc2.models), "| default =", sc2.defaultModel, "| cred =", sc2.credentialOk);
   if (sc2.models.length !== 2 || sc2.models[0].id !== "deepseek-v4-flash") { console.error("❌ 默认回退失败"); process.exit(1); }
-  try { fs.rmSync(fakeHome, { recursive: true, force: true }); fs.rmSync(emptyHome, { recursive: true, force: true }); } catch (e) {}
+  // 嵌套 providers（如 llm-pi-ai.providers.opencode-go.models）→ 也要扫到，且带 provider 路由
+  const fakeHome2 = path.join(os.tmpdir(), "dsh-plugin-scan-nested-" + Date.now());
+  fs.mkdirSync(fakeHome2, { recursive: true });
+  fs.writeFileSync(path.join(fakeHome2, "settings.yaml"), [
+    "agent-default-model:",
+    "  provider: opencode-go",
+    "  model: deepseek-v4-flash",
+    "  reasoningEffort: max",
+    "llm-deepseek: { models: [] }",
+    "llm-pi-ai:",
+    "  providers:",
+    "    opencode-go:",
+    "      apiKeyEnv: OPENCODE_API_KEY",
+    "      models:",
+    "        - id: mimo-v2.5-pro",
+    "          name: MiMo V2.5 Pro",
+    "          contextWindow: 1048576",
+    "        - id: deepseek-v4-flash",
+    "          name: DeepSeek V4 Flash",
+  ].join("\n"));
+  const sc3 = scanModels({ baseHome: fakeHome2 });
+  console.log("嵌套 providers 扫描:", JSON.stringify(sc3.models), "| provider =", sc3.provider);
+  if (!sc3.ok || sc3.models.length !== 2 || sc3.models[0].id !== "mimo-v2.5-pro" || sc3.models[0].provider !== "opencode-go" || sc3.provider !== "opencode-go") {
+    console.error("❌ 嵌套 providers 扫描失败");
+    process.exit(1);
+  }
+  try { fs.rmSync(fakeHome, { recursive: true, force: true }); fs.rmSync(emptyHome, { recursive: true, force: true }); fs.rmSync(fakeHome2, { recursive: true, force: true }); } catch (e) {}
 
   console.log("\n== 9) 实时事件流（live:true → reasoning/tool/text 事件）==");
   const liveHome = path.join(os.tmpdir(), "dsh-plugin-live-home-" + Date.now());
