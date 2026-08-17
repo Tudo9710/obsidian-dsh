@@ -273,9 +273,11 @@ class DSHPlugin extends Plugin {
       this.settings.defaultModel = scan.defaultModel || this.settings.defaultModel;
       this.settings.defaultEffort = scan.defaultEffort || this.settings.defaultEffort;
       await this.saveSettings();
-      // 刷新打开的聊天视图模型下拉（保留当前选择）
-      const view = this.getChatView();
-      if (view && view.refreshModelOptions) view.refreshModelOptions();
+      // 刷新所有打开的聊天视图的模型下拉（保留当前选择）
+      const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+      for (const l of leaves) {
+        if (l.view && l.view.refreshModelOptions) l.view.refreshModelOptions();
+      }
     }
     return scan;
   }
@@ -599,7 +601,9 @@ class DSHChatView extends ItemView {
       e.preventDefault(); e.stopPropagation();
       const menu = new Menu();
       menu.addItem((it) => it.setTitle(label).setIsLabel(true));
-      for (const o of opts) {
+      // 读取按钮上的最新列表（refreshModelOptions 会更新 __opts，菜单不能锁死旧列表）
+      const items = btn.__opts && btn.__opts.length ? btn.__opts : opts;
+      for (const o of items) {
         menu.addItem((it) => it.setTitle(o.label).setChecked(o.value === btn.__value).onClick(() => {
           btn.__value = o.value;
           lab.setText(o.label);
@@ -797,19 +801,12 @@ class DSHChatView extends ItemView {
     this.setToolbarValue(this.permBtn, this.currentPerm());
   }
 
-  /** 扫描模型后刷新模型下拉（保留当前选择） */
+  /** 扫描模型后刷新模型下拉（保留当前选择；菜单与显示同步更新） */
   refreshModelOptions() {
     if (!this.modelBtn) return;
     const keep = this.currentModel();
-    const opts = this.modelOptions();
-    this.modelBtn.__opts = opts;
-    this.modelBtn.__value = keep;
-    const area = this.modelBtn.querySelector(".agent-client-toolbar-dropdown-label-area");
-    if (area) {
-      area.empty();
-      for (const o of opts) area.createSpan({ cls: "agent-client-toolbar-dropdown-sizer", text: o.label });
-      area.createSpan({ cls: "agent-client-toolbar-dropdown-label", text: (opts.find((o) => o.value === keep) || {}).label || "模型" });
-    }
+    this.modelBtn.__opts = this.modelOptions();
+    this.setToolbarValue(this.modelBtn, keep);
   }
 
   selectionSnapshot() {
