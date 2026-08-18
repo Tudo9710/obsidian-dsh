@@ -2006,7 +2006,6 @@ class DSHChatView extends ItemView {
           const btn = opts.createEl("button", { cls: "dsh-ask-bar-option" + (multi ? " is-multi" : ""), attr: { type: "button" } });
           btn.createSpan({ cls: "dsh-ask-bar-option-marker" });
           btn.createSpan({ cls: "dsh-ask-bar-option-label", text: opt.label });
-          if (opt.description) btn.createSpan({ cls: "dsh-ask-bar-option-desc", text: opt.description });
           btn.addEventListener("click", () => {
             btn.classList.toggle("is-selected");
             // 单选：清掉其它（多选保留多个选中）

@@ -2469,6 +2469,7 @@ If your plugin does not need CSS, delete this file.
 .dsh-ask-bar-option {
 	display: flex;
 	align-items: flex-start;
+	flex-wrap: wrap;
 	gap: 8px;
 	width: 100%;
 	padding: 5px 8px;
@@ -2482,8 +2483,8 @@ If your plugin does not need CSS, delete this file.
 	box-shadow: none;
 	appearance: none;
 }
-.dsh-ask-bar-option:hover { background: var(--background-modifier-hover); }
-.dsh-ask-bar-option.is-selected { background: var(--background-modifier-hover); }
+.dsh-ask-bar-option:hover { background: transparent; }
+.dsh-ask-bar-option.is-selected { background: transparent; }
 .dsh-ask-bar-option-marker {
 	flex-shrink: 0;
 	width: 14px;
@@ -2508,14 +2509,6 @@ If your plugin does not need CSS, delete this file.
 .dsh-ask-bar-option.is-multi .dsh-ask-bar-option-marker { border-radius: 4px; }
 .dsh-ask-bar-option.is-multi.is-selected .dsh-ask-bar-option-marker::after { border-radius: 2px; }
 .dsh-ask-bar-option-label { flex: 1; min-width: 0; word-break: break-word; line-height: 1.35; }
-.dsh-ask-bar-option-desc {
-	display: block;
-	font-size: var(--font-ui-smaller);
-	color: var(--text-muted);
-	margin-top: 2px;
-	white-space: pre-wrap;
-	word-break: break-word;
-}
 .dsh-ask-bar-custom {
 	width: 100%;
 	box-sizing: border-box;
